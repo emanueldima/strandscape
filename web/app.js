@@ -45,6 +45,34 @@ async function run() {
       frame = requestAnimationFrame(draw);
     }
 
+    let pointer = null;
+    canvas.addEventListener('mousemove', (event) => {
+      const rect = canvas.getBoundingClientRect();
+      if (pointer && rect.width > 0 && rect.height > 0) {
+        app.orbit((event.clientX - pointer[0]) / rect.width,
+          (event.clientY - pointer[1]) / rect.height);
+        requestDraw();
+      }
+      pointer = [event.clientX, event.clientY];
+    });
+    canvas.addEventListener('mouseleave', () => { pointer = null; });
+    canvas.addEventListener('click', (event) => {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      app.focus((event.clientX - rect.left) / rect.width * 2 - 1,
+        1 - (event.clientY - rect.top) / rect.height * 2, rect.width / rect.height);
+      requestDraw();
+    });
+    canvas.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      // Normalize line/page scrolling to CSS pixels before proportional zoom.
+      const lineHeight = 16;
+      const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? lineHeight
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? canvas.clientHeight : 1;
+      app.zoom(event.deltaY * unit);
+      requestDraw();
+    }, { passive: false });
+
     // Rearm the query after each display-scale change.
     let scaleQuery;
     function watchScale() {

@@ -1,6 +1,8 @@
 #![cfg_attr(test, allow(dead_code))]
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod camera;
+#[cfg(any(target_arch = "wasm32", test))]
 mod render;
 #[cfg(any(target_arch = "wasm32", test))]
 mod scene;

@@ -1,7 +1,8 @@
 use {
     crate::{
+        camera::{Camera, CameraConfig},
         render::{RenderConfig, Renderer, Target, Viewport},
-        scene::{Camera, Item, Plane, Scene, SceneConfig, Text, Transform},
+        scene::{Item, Plane, Scene, SceneConfig, Text, Transform},
         text::{FontConfig, FontId, FontSystem, TextSpec},
     },
     glam::{Quat, Vec2, Vec3},
@@ -31,16 +32,13 @@ impl WebApp {
         // Text shares the plane's orientation, with a small offset to avoid z-fighting.
         let rotation = Quat::from_rotation_y(-0.18) * Quat::from_rotation_x(-0.08);
         let scene = Scene::new(SceneConfig {
-            camera: Camera {
-                transform: Transform {
-                    translation: Vec3::new(0.0, 0.0, 6.0),
-                    rotation: Quat::IDENTITY,
-                    scale: Vec3::ONE,
-                },
+            camera: Camera::new(CameraConfig {
+                position: Vec3::new(0.0, 0.0, 6.0),
+                focus: Vec3::ZERO,
                 vertical_fov: 45.0_f32.to_radians(),
                 near: 0.1,
                 far: 100.0,
-            },
+            }),
             items: vec![
                 Item::Plane(Plane {
                     transform: Transform {
@@ -94,6 +92,19 @@ impl WebApp {
             height,
             scale_factor,
         });
+    }
+
+    pub fn orbit(&mut self, x: f32, y: f32) {
+        self.scene.camera.orbit(Vec2::new(x, y));
+    }
+
+    pub fn focus(&mut self, x: f32, y: f32, aspect: f32) {
+        let point = self.scene.pick(Vec2::new(x, y), aspect);
+        self.scene.camera.focus(point);
+    }
+
+    pub fn zoom(&mut self, scroll: f32) {
+        self.scene.camera.zoom(scroll);
     }
 }
 

@@ -70,25 +70,10 @@ impl Renderer {
             return Ok(());
         }
 
-        let camera = &scene.camera;
-        if !camera.vertical_fov.is_finite()
-            || camera.vertical_fov <= 0.0
-            || !(0.0..std::f32::consts::PI).contains(&camera.vertical_fov)
-            || !camera.near.is_finite()
-            || !camera.far.is_finite()
-            || camera.near <= 0.0
-            || camera.far <= camera.near
-        {
-            return Err(RenderError::InvalidView);
-        }
-
-        let projection = Mat4::perspective_rh(
-            camera.vertical_fov,
-            self.viewport.width as f32 / self.viewport.height as f32,
-            camera.near,
-            camera.far,
-        );
-        let clip_from_world = projection * camera.transform.matrix().inverse();
+        let clip_from_world = scene
+            .camera
+            .clip_from_world(self.viewport.width as f32 / self.viewport.height as f32)
+            .ok_or(RenderError::InvalidView)?;
         let mut list = DrawList {
             planes: Vec::new(),
             text: TextBatch {
