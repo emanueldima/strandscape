@@ -1,0 +1,420 @@
+{
+  "schemaVersion": "1.0",
+  "id": "albert-einstein",
+  "title": "Albert Einstein: selected life events",
+  "person": {
+    "id": "albert-einstein",
+    "name": "Albert Einstein",
+    "birthDate": "1879-03-14",
+    "deathDate": "1955-04-18"
+  },
+  "notes": {
+    "scope": "A small curated selection for the first Strandscape timeline and map; not a complete biography or travel itinerary.",
+    "dates": "Gregorian calendar. date strings use YYYY, YYYY-MM or YYYY-MM-DD, with datePrecision indicating the recorded precision. Do not display missing months or days as known dates.",
+    "coordinates": "Approximate modern city centres, manually assigned in WGS84 decimal degrees; not historical addresses. Country names are modern map labels.",
+    "places": "Places mark the subject's city associated with the event, not necessarily a publisher or institution's location. A null place means this dataset does not assign a defensible location; show the event on the timeline only.",
+    "sources": "sourceIds refer to the sources array. Descriptions are editorial summaries. Source URLs support historical claims, not the approximate coordinates.",
+    "rendering": "Select events by stable id. Do not infer a continuous route or residence interval between events."
+  },
+  "sources": [
+    {
+      "id": "eth",
+      "publisher": "ETH Library",
+      "title": "Albert Einstein (1879–1955)",
+      "url": "https://library.ethz.ch/en/collections-and-archives/short-portraits/einstein-albert-1879-1955.html",
+      "accessed": "2026-11-02"
+    },
+    {
+      "id": "chronology",
+      "publisher": "Hans-Josef Küpper",
+      "title": "Chronology of Einstein’s Life",
+      "url": "https://einstein-website.de/en/timeline/",
+      "accessed": "2026-11-02"
+    },
+    {
+      "id": "nobel",
+      "publisher": "Nobel Prize",
+      "title": "Albert Einstein — Facts",
+      "url": "https://www.nobelprize.org/prizes/physics/1921/einstein/facts/",
+      "accessed": "2026-11-02"
+    },
+    {
+      "id": "nobel-bio",
+      "publisher": "Nobel Prize",
+      "title": "Albert Einstein — Biographical",
+      "url": "https://www.nobelprize.org/prizes/physics/1921/einstein/biographical/",
+      "accessed": "2026-11-02"
+    },
+    {
+      "id": "ias",
+      "publisher": "Institute for Advanced Study",
+      "title": "Albert Einstein",
+      "url": "https://www.ias.edu/scholars/einstein",
+      "accessed": "2026-11-02"
+    }
+  ],
+  "events": [
+    {
+      "id": "einstein-birth",
+      "personId": "albert-einstein",
+      "title": "Born in Ulm",
+      "date": "1879-03-14",
+      "datePrecision": "day",
+      "category": "personal",
+      "place": {
+        "id": "ulm",
+        "name": "Ulm",
+        "country": "Germany",
+        "latitude": 48.4,
+        "longitude": 9.99,
+        "coordinatePrecision": "city"
+      },
+      "description": "Albert Einstein is born in Ulm.",
+      "sourceIds": [
+        "nobel"
+      ]
+    },
+    {
+      "id": "einstein-munich",
+      "personId": "albert-einstein",
+      "title": "Family moves to Munich",
+      "date": "1880-06",
+      "datePrecision": "month",
+      "category": "relocation",
+      "place": {
+        "id": "munich",
+        "name": "Munich",
+        "country": "Germany",
+        "latitude": 48.14,
+        "longitude": 11.58,
+        "coordinatePrecision": "city"
+      },
+      "description": "His family settles in Munich.",
+      "sourceIds": [
+        "chronology"
+      ]
+    },
+    {
+      "id": "einstein-milan",
+      "personId": "albert-einstein",
+      "title": "Joins his family in Italy",
+      "date": "1894-12",
+      "datePrecision": "month",
+      "category": "relocation",
+      "place": {
+        "id": "milan",
+        "name": "Milan",
+        "country": "Italy",
+        "latitude": 45.46,
+        "longitude": 9.19,
+        "coordinatePrecision": "city"
+      },
+      "description": "Leaves school in Munich and joins his family in Milan.",
+      "sourceIds": [
+        "chronology"
+      ]
+    },
+    {
+      "id": "einstein-aarau",
+      "personId": "albert-einstein",
+      "title": "Continues schooling in Aarau",
+      "date": "1895-10",
+      "datePrecision": "month",
+      "category": "education",
+      "place": {
+        "id": "aarau",
+        "name": "Aarau",
+        "country": "Switzerland",
+        "latitude": 47.39,
+        "longitude": 8.05,
+        "coordinatePrecision": "city"
+      },
+      "description": "Attends cantonal school after failing the Zurich Polytechnic entrance examination.",
+      "sourceIds": [
+        "chronology",
+        "eth"
+      ]
+    },
+    {
+      "id": "einstein-polytechnic",
+      "personId": "albert-einstein",
+      "title": "Begins studies in Zurich",
+      "date": "1896",
+      "datePrecision": "year",
+      "category": "education",
+      "place": {
+        "id": "zurich",
+        "name": "Zurich",
+        "country": "Switzerland",
+        "latitude": 47.38,
+        "longitude": 8.54,
+        "coordinatePrecision": "city"
+      },
+      "description": "Enrols at the Federal Polytechnic School.",
+      "sourceIds": [
+        "eth"
+      ]
+    },
+    {
+      "id": "einstein-diploma",
+      "personId": "albert-einstein",
+      "title": "Earns teaching diploma",
+      "date": "1900",
+      "datePrecision": "year",
+      "category": "education",
+      "place": {
+        "id": "zurich",
+        "name": "Zurich",
+        "country": "Switzerland",
+        "latitude": 47.38,
+        "longitude": 8.54,
+        "coordinatePrecision": "city"
+      },
+      "description": "Completes his mathematics and science teaching qualification.",
+      "sourceIds": [
+        "eth"
+      ]
+    },
+    {
+      "id": "einstein-patent-office",
+      "personId": "albert-einstein",
+      "title": "Starts work at the patent office",
+      "date": "1902-06-23",
+      "datePrecision": "day",
+      "category": "career",
+      "place": {
+        "id": "bern",
+        "name": "Bern",
+        "country": "Switzerland",
+        "latitude": 46.95,
+        "longitude": 7.45,
+        "coordinatePrecision": "city"
+      },
+      "description": "Begins work as a third-class technical expert.",
+      "sourceIds": [
+        "chronology",
+        "eth"
+      ]
+    },
+    {
+      "id": "einstein-marriage",
+      "personId": "albert-einstein",
+      "title": "Marries Mileva Marić",
+      "date": "1903-01-06",
+      "datePrecision": "day",
+      "category": "personal",
+      "place": {
+        "id": "bern",
+        "name": "Bern",
+        "country": "Switzerland",
+        "latitude": 46.95,
+        "longitude": 7.45,
+        "coordinatePrecision": "city"
+      },
+      "description": "Marries his former fellow student Mileva Marić in Bern.",
+      "sourceIds": [
+        "chronology",
+        "nobel-bio"
+      ]
+    },
+    {
+      "id": "einstein-miracle-year",
+      "personId": "albert-einstein",
+      "title": "Publishes his breakthrough papers",
+      "date": "1905",
+      "datePrecision": "year",
+      "category": "science",
+      "place": {
+        "id": "bern",
+        "name": "Bern",
+        "country": "Switzerland",
+        "latitude": 46.95,
+        "longitude": 7.45,
+        "coordinatePrecision": "city"
+      },
+      "description": "Develops work on light quanta, Brownian motion, special relativity and mass–energy equivalence while working in Bern.",
+      "sourceIds": [
+        "nobel-bio",
+        "chronology"
+      ]
+    },
+    {
+      "id": "einstein-zurich-professor",
+      "personId": "albert-einstein",
+      "title": "Becomes a professor in Zurich",
+      "date": "1909",
+      "datePrecision": "year",
+      "category": "career",
+      "place": {
+        "id": "zurich",
+        "name": "Zurich",
+        "country": "Switzerland",
+        "latitude": 47.38,
+        "longitude": 8.54,
+        "coordinatePrecision": "city"
+      },
+      "description": "Joins the University of Zurich as an associate professor.",
+      "sourceIds": [
+        "eth"
+      ]
+    },
+    {
+      "id": "einstein-prague-professor",
+      "personId": "albert-einstein",
+      "title": "Takes a professorship in Prague",
+      "date": "1911",
+      "datePrecision": "year",
+      "category": "career",
+      "place": {
+        "id": "prague",
+        "name": "Prague",
+        "country": "Czechia",
+        "latitude": 50.08,
+        "longitude": 14.44,
+        "coordinatePrecision": "city"
+      },
+      "description": "Becomes a professor at the German university in Prague.",
+      "sourceIds": [
+        "eth"
+      ]
+    },
+    {
+      "id": "einstein-eth-professor",
+      "personId": "albert-einstein",
+      "title": "Returns to Zurich as an ETH professor",
+      "date": "1912",
+      "datePrecision": "year",
+      "category": "career",
+      "place": {
+        "id": "zurich",
+        "name": "Zurich",
+        "country": "Switzerland",
+        "latitude": 47.38,
+        "longitude": 8.54,
+        "coordinatePrecision": "city"
+      },
+      "description": "Takes up a professorship in theoretical physics at ETH.",
+      "sourceIds": [
+        "eth"
+      ]
+    },
+    {
+      "id": "einstein-berlin",
+      "personId": "albert-einstein",
+      "title": "Moves to Berlin",
+      "date": "1914-04",
+      "datePrecision": "month",
+      "category": "relocation",
+      "place": {
+        "id": "berlin",
+        "name": "Berlin",
+        "country": "Germany",
+        "latitude": 52.52,
+        "longitude": 13.4,
+        "coordinatePrecision": "city"
+      },
+      "description": "Begins his Berlin period with membership in the Prussian Academy of Sciences.",
+      "sourceIds": [
+        "chronology",
+        "eth"
+      ]
+    },
+    {
+      "id": "einstein-general-relativity",
+      "personId": "albert-einstein",
+      "title": "Completes general relativity",
+      "date": "1915-11",
+      "datePrecision": "month",
+      "category": "science",
+      "place": {
+        "id": "berlin",
+        "name": "Berlin",
+        "country": "Germany",
+        "latitude": 52.52,
+        "longitude": 13.4,
+        "coordinatePrecision": "city"
+      },
+      "description": "Presents his completed theory to the Prussian Academy of Sciences.",
+      "sourceIds": [
+        "chronology",
+        "eth"
+      ]
+    },
+    {
+      "id": "einstein-elsa",
+      "personId": "albert-einstein",
+      "title": "Marries Elsa Löwenthal",
+      "date": "1919-06-02",
+      "datePrecision": "day",
+      "category": "personal",
+      "place": {
+        "id": "berlin",
+        "name": "Berlin",
+        "country": "Germany",
+        "latitude": 52.52,
+        "longitude": 13.4,
+        "coordinatePrecision": "city"
+      },
+      "description": "Marries Elsa after his divorce from Mileva.",
+      "sourceIds": [
+        "chronology",
+        "nobel-bio"
+      ]
+    },
+    {
+      "id": "einstein-nobel",
+      "personId": "albert-einstein",
+      "title": "Awarded the 1921 Nobel Prize in Physics",
+      "date": "1922",
+      "datePrecision": "year",
+      "category": "award",
+      "place": null,
+      "description": "Receives the prize for theoretical physics, particularly the law of the photoelectric effect. The award year is 1921; the award was made in 1922.",
+      "sourceIds": [
+        "nobel"
+      ]
+    },
+    {
+      "id": "einstein-princeton",
+      "personId": "albert-einstein",
+      "title": "Settles in Princeton",
+      "date": "1933",
+      "datePrecision": "year",
+      "category": "relocation",
+      "place": {
+        "id": "princeton",
+        "name": "Princeton, New Jersey",
+        "country": "United States",
+        "latitude": 40.36,
+        "longitude": -74.67,
+        "coordinatePrecision": "city"
+      },
+      "description": "Emigrates following the Nazi seizure of power and joins the Institute for Advanced Study.",
+      "sourceIds": [
+        "eth",
+        "ias"
+      ]
+    },
+    {
+      "id": "einstein-death",
+      "personId": "albert-einstein",
+      "title": "Dies in Princeton",
+      "date": "1955-04-18",
+      "datePrecision": "day",
+      "category": "personal",
+      "place": {
+        "id": "princeton",
+        "name": "Princeton, New Jersey",
+        "country": "United States",
+        "latitude": 40.36,
+        "longitude": -74.67,
+        "coordinatePrecision": "city"
+      },
+      "description": "Dies at age 76.",
+      "sourceIds": [
+        "nobel",
+        "eth"
+      ]
+    }
+  ]
+}

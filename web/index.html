@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Strandscape</title>
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; background: #101a22; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #status { position: fixed; inset: auto 1.5rem 1.5rem; margin: 0; color: #eee0bf; font: 1rem/1.5 system-ui; }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene" aria-label="Strandscape: people, ideas, time and place"></canvas>
+    <p id="status" role="status">Loading Strandscape…</p>
+    <script type="module">
+      import init, { start } from './pkg/strandscape.js';
+
+      const defaultFont = 'https://raw.githubusercontent.com/google/fonts/main/ofl/abeezee/ABeeZee-Regular.ttf';
+      const fontUrl = new URLSearchParams(location.search).get('font') ?? defaultFont;
+      const status = document.getElementById('status');
+
+      try {
+        await init();
+        await start('scene', fontUrl);
+        status.hidden = true;
+      } catch (error) {
+        status.textContent = `Could not start Strandscape: ${error.message ?? error}`;
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>
