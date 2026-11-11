@@ -13,21 +13,6 @@
   <body>
     <canvas id="scene" aria-label="Strandscape: people, ideas, time and place"></canvas>
     <p id="status" role="status">Loading Strandscape…</p>
-    <script type="module">
-      import init, { start } from './pkg/strandscape.js';
-
-      const defaultFont = 'https://raw.githubusercontent.com/google/fonts/main/ofl/abeezee/ABeeZee-Regular.ttf';
-      const fontUrl = new URLSearchParams(location.search).get('font') ?? defaultFont;
-      const status = document.getElementById('status');
-
-      try {
-        await init();
-        await start('scene', fontUrl);
-        status.hidden = true;
-      } catch (error) {
-        status.textContent = `Could not start Strandscape: ${error.message ?? error}`;
-        console.error(error);
-      }
-    </script>
+    <script type="module" src="./app.js"></script>
   </body>
 </html>

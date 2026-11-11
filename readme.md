@@ -1,12 +1,17 @@
 # Strandscape
 
-Strandscape is a software project for visualizations of people and ideas evolving in time and space. It brings information from multiple sources into a shared visual context to reveal connections, movements, and change.
+Strandscape is a software project for visualizations of people and ideas evolving
+in time and space. It brings information from multiple sources into a shared visual
+context to reveal connections, movements, and change.
 
 ## Concept
 
-Timelines show when things happened; geographic views show where. Together, they help trace a person's journey, follow the spread of an idea, or explore how different histories intersect.
+Timelines show when things happened; geographic views show where. Together, 
+they help trace a person's journey, follow the spread of an idea, or explore
+how different histories intersect.
 
-Events connect these stories to dates, places, people, ideas, and supporting media. Information from multiple sources can be explored together, with its origins preserved.
+Events connect these stories to dates, places, people, ideas, and supporting media.
+Information from multiple sources can be explored together, with its origins preserved.
 
 ## Examples
 
@@ -17,9 +22,10 @@ Events connect these stories to dates, places, people, ideas, and supporting med
 ## Development
 
 The first iteration renders a plane and shaped text through wgpu. Rust owns the
-scene, font processing, and GPU atlas. The browser supplies font bytes and redraws
-when the canvas size or display scale changes. wgpu selects WebGPU when available
-and falls back to WebGL2.
+scene, font processing, and GPU atlas. `web/app.js` downloads fonts, observes canvas
+size and display scale, schedules redraws, and displays errors. `src/web.rs`
+exposes `WebApp.create(canvas, bytes, width, height, scale)`, `resize`, and `draw`.
+wgpu selects WebGPU when available and falls back to WebGL2.
 
 Install the browser build tools:
 

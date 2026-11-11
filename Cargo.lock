@@ -802,7 +802,6 @@ dependencies = [
  "bytemuck",
  "cosmic-text",
  "glam",
- "js-sys",
  "naga",
  "raw-window-handle",
  "thiserror",
