@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]
 bytemuck = { version = "1.25", features = ["derive"] }
 cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "shape-run-cache", "wasm-web"] }
 glam = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 wgpu = { version = "29.0.3", default-features = false, features = ["std", "wgsl", "metal", "webgpu", "webgl"] }
 

@@ -1,18 +1,19 @@
 use {
     crate::{
-        camera::{Camera, CameraConfig},
+        composer::{self, ContextLayer, Target as Subject},
+        events::Dataset,
         render::{RenderConfig, Renderer, Target, Viewport},
-        scene::{Item, Plane, Scene, SceneConfig, Text, Transform},
-        text::{FontConfig, FontId, FontSystem, TextSpec},
+        text::{FontConfig, FontId, FontSystem},
     },
-    glam::{Quat, Vec2, Vec3},
+    glam::{Vec2, Vec3},
     wasm_bindgen::{JsError, prelude::wasm_bindgen},
     web_sys::HtmlCanvasElement,
 };
 
 #[wasm_bindgen]
 pub struct WebApp {
-    scene: Scene,
+    dataset: Dataset,
+    output: composer::Output,
     renderer: Renderer,
 }
 
@@ -29,42 +30,17 @@ impl WebApp {
             fonts: vec![(FONT, font_bytes)],
         })?;
 
-        // Text shares the plane's orientation, with a small offset to avoid z-fighting.
-        let rotation = Quat::from_rotation_y(-0.18) * Quat::from_rotation_x(-0.08);
-        let scene = Scene::new(SceneConfig {
-            camera: Camera::new(CameraConfig {
-                position: Vec3::new(0.0, 0.0, 6.0),
-                focus: Vec3::ZERO,
-                vertical_fov: 45.0_f32.to_radians(),
-                near: 0.1,
-                far: 100.0,
-            }),
-            items: vec![
-                Item::Plane(Plane {
-                    transform: Transform {
-                        translation: Vec3::ZERO,
-                        rotation,
-                        scale: Vec3::ONE,
-                    },
-                    size: Vec2::new(4.5, 2.4),
-                    color: [0.035, 0.10, 0.13, 1.0],
-                }),
-                Item::Text(Text {
-                    transform: Transform {
-                        translation: rotation * Vec3::new(-1.8, 0.65, 0.01),
-                        rotation,
-                        scale: Vec3::splat(0.009),
-                    },
-                    spec: TextSpec {
-                        content: "Strandscape\nPeople, ideas, time and place.".into(),
-                        font: FONT,
-                        size: 32.0,
-                        max_width: Some(400.0),
-                    },
-                    color: [0.91, 0.84, 0.66, 1.0],
-                }),
-            ],
-        });
+        let dataset = Dataset::parse(include_bytes!("../data/einstein.json"))?;
+        let output = composer::build(
+            &dataset,
+            &composer::Config {
+                layers: &[ContextLayer::Timeline, ContextLayer::Map],
+                selected: None,
+                reference: &dataset.events[0].date,
+                font: FONT,
+                aspect: width.max(1) as f32 / height.max(1) as f32,
+            },
+        )?;
         let renderer = Renderer::new(
             Target::from(canvas),
             fonts,
@@ -78,11 +54,15 @@ impl WebApp {
             },
         )
         .await?;
-        Ok(Self { scene, renderer })
+        Ok(Self {
+            dataset,
+            output,
+            renderer,
+        })
     }
 
     pub fn draw(&mut self) -> Result<(), JsError> {
-        self.renderer.draw(&self.scene)?;
+        self.renderer.draw(&self.output.scene)?;
         Ok(())
     }
 
@@ -95,16 +75,51 @@ impl WebApp {
     }
 
     pub fn orbit(&mut self, x: f32, y: f32) {
-        self.scene.camera.orbit(Vec2::new(x, y));
+        self.output.scene.camera.orbit(Vec2::new(x, y));
     }
 
-    pub fn focus(&mut self, x: f32, y: f32, aspect: f32) {
-        let point = self.scene.pick(Vec2::new(x, y), aspect);
-        self.scene.camera.focus(point);
+    pub fn focus(&mut self, x: f32, y: f32, aspect: f32) -> Result<Option<String>, JsError> {
+        let Some(hit) = self.output.scene.pick(Vec2::new(x, y), aspect) else {
+            self.output.scene.camera.focus(Vec3::ZERO);
+            return Ok(None);
+        };
+        self.output.scene.camera.focus(hit.point);
+        match self.output.bindings.get(&hit.item) {
+            Some(Subject::Entry(id)) => {
+                let output = composer::build(
+                    &self.dataset,
+                    &composer::Config {
+                        layers: &[ContextLayer::Timeline, ContextLayer::Map],
+                        selected: Some(id),
+                        reference: &self.dataset.events[0].date,
+                        font: FONT,
+                        aspect,
+                    },
+                )?;
+                let title = self
+                    .dataset
+                    .events
+                    .iter()
+                    .find(|event| &event.id == id)
+                    .map(|event| event.title.clone());
+                // Replace presentation data while preserving the user's camera.
+                self.output.scene.items = output.scene.items;
+                self.output.bindings = output.bindings;
+                Ok(title)
+            }
+            Some(Subject::Place(id)) => Ok(self
+                .dataset
+                .events
+                .iter()
+                .filter_map(|event| event.place.as_ref())
+                .find(|place| &place.id == id)
+                .map(|place| place.name.clone())),
+            None => Ok(None),
+        }
     }
 
     pub fn zoom(&mut self, scroll: f32) {
-        self.scene.camera.zoom(scroll);
+        self.output.scene.camera.zoom(scroll);
     }
 }
 

@@ -19,23 +19,46 @@ Information from multiple sources can be explored together, with its origins pre
 - The history of an idea across publications, correspondence, people, and places.
 - A trip connecting stops and experiences with photos, videos, and other records.
 
+## Architecture
+
+| Module | Responsibility |
+| --- | --- |
+| `events` | Parse and validate event data. |
+| `composer` | Combine events with requested context. |
+| `sculptor` | Translate compositions into scene primitives. |
+| `scene` | Scene primitives and hit testing. |
+| `camera` | Projection, orbit, focus, and zoom. |
+| `text` | Shape text and rasterize glyphs. |
+| `render` | Convert scenes into drawing data. |
+| `render::gpu` | Manage wgpu resources and frame submission. |
+| `render::text` | Maintain the glyph atlas and draw text. |
+| `web` | Expose the application through Wasm. |
+| `web/app.js` | Download fonts, handle input, and schedule redraws. |
+
+The example embeds `data/einstein.json`. Scene construction and rendering are separate calls:
+
+```text
+web/app.js
+├── WebApp::create(...)
+│   ├── events::Dataset::parse(json) → Dataset
+│   └── composer::build(dataset, config) → scene + selection bindings
+│       └── sculptor::build(composition, config)
+│           └── scene::Scene::new(config)
+└── WebApp::draw()
+    └── render::Renderer::draw(scene)
+        ├── camera::Camera::clip_from_world(...)
+        ├── text::FontSystem::{layout, rasterize}(...)
+        └── render::gpu::Gpu::draw(draw_list)
+            ├── render::text::TextRenderer::{prepare, draw}(...)
+            └── wgpu → canvas
+```
+
 ## Development
-
-The first iteration renders a plane and shaped text through wgpu. Rust owns the
-scene, font processing, and GPU atlas. `web/app.js` downloads fonts, observes canvas
-size and display scale, schedules redraws, and displays errors. `src/web.rs`
-exposes `WebApp.create(canvas, bytes, width, height, scale)`, `resize`, and `draw`.
-wgpu selects WebGPU when available and falls back to WebGL2.
-
-Drag with the left mouse button to orbit around the focus. Click a plane to focus on the hit point;
-click empty space to focus on the origin. The camera turns without changing position.
-Scroll up to move closer or down to move farther, within 0.25–50 world units.
 
 Install the browser build tools:
 
 ```sh
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.126 --locked
+make install-tools
 ```
 
 Build and serve:
@@ -45,14 +68,6 @@ make web
 make serve
 ```
 
-Open http://localhost:8080. The page downloads ABeeZee from Google Fonts at runtime.
-Supply another direct TTF/OTF URL using `?font=<encoded-url>`. Cross-origin servers
-must allow fetching the font through CORS. Fonts are never bundled.
+Open http://localhost:8080.
 
-Check the crate with `make check`. To include the font integration test, download
-a font outside the repository and provide its path:
-
-```sh
-curl -fL https://raw.githubusercontent.com/google/fonts/main/ofl/abeezee/ABeeZee-Regular.ttf -o /tmp/strandscape-font.ttf
-STRANDSCAPE_TEST_FONT=/tmp/strandscape-font.ttf cargo test --lib -- --include-ignored
-```
+Check the crate with `make check`.

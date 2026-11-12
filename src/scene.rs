@@ -16,6 +16,11 @@ pub(crate) struct SceneConfig {
     pub(crate) items: Vec<Item>,
 }
 
+pub(crate) struct Hit {
+    pub(crate) item: usize,
+    pub(crate) point: Vec3,
+}
+
 pub(crate) enum Item {
     Plane(Plane),
     Text(Text),
@@ -48,19 +53,21 @@ impl Scene {
         }
     }
 
-    pub(crate) fn pick(&self, point: Vec2, aspect: f32) -> Vec3 {
-        let Some(ray) = self.camera.ray(point, aspect) else {
-            return Vec3::ZERO;
-        };
+    pub(crate) fn pick(&self, point: Vec2, aspect: f32) -> Option<Hit> {
+        let ray = self.camera.ray(point, aspect)?;
 
         self.items
             .iter()
-            .filter_map(|item| match item {
-                Item::Plane(plane) => plane.hit(&ray),
+            .enumerate()
+            .filter_map(|(index, item)| match item {
+                Item::Plane(plane) => plane.hit(&ray).map(|distance| (index, distance)),
                 Item::Text(_) => None,
             })
-            .min_by(f32::total_cmp)
-            .map_or(Vec3::ZERO, |distance| ray.origin + ray.direction * distance)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(item, distance)| Hit {
+                item,
+                point: ray.origin + ray.direction * distance,
+            })
     }
 }
 
@@ -113,8 +120,9 @@ mod tests {
                 })
                 .collect();
             let scene = scene(items);
-            let hit = scene.pick(Vec2::new(0.1, 0.1), 1.6);
-            assert!(hit.abs_diff_eq(Vec3::new(0.64, 0.4, 2.0), TOLERANCE));
+            let hit = scene.pick(Vec2::new(0.1, 0.1), 1.6).unwrap();
+            assert!(hit.point.abs_diff_eq(Vec3::new(0.64, 0.4, 2.0), TOLERANCE));
+            assert_eq!(depths[hit.item], 2.0);
         }
     }
 
@@ -133,15 +141,21 @@ mod tests {
         let projection = scene.camera.clip_from_world(1.6).unwrap();
         let target = transform.transform_point3(Vec3::new(0.4, -0.3, 0.0));
         let point = projection.project_point3(target).truncate();
-        assert!(scene.pick(point, 1.6).abs_diff_eq(target, TOLERANCE));
+        assert!(
+            scene
+                .pick(point, 1.6)
+                .unwrap()
+                .point
+                .abs_diff_eq(target, TOLERANCE)
+        );
 
         let outside = transform.transform_point3(Vec3::new(1.2, 0.0, 0.0));
         let point = projection.project_point3(outside).truncate();
-        assert_eq!(scene.pick(point, 1.6), Vec3::ZERO);
+        assert!(scene.pick(point, 1.6).is_none());
     }
 
     #[test]
-    fn misses_use_origin() {
+    fn misses_return_none() {
         let scenes = [
             scene(vec![]),
             scene(vec![plane(
@@ -156,14 +170,14 @@ mod tests {
             )]),
         ];
         for scene in scenes {
-            assert_eq!(scene.pick(Vec2::ZERO, 1.0), Vec3::ZERO);
+            assert!(scene.pick(Vec2::ZERO, 1.0).is_none());
         }
         let scene = scene(vec![plane(
             Vec3::new(0.0, 0.0, 2.0),
             Quat::IDENTITY,
             Vec3::ONE,
         )]);
-        assert_eq!(scene.pick(Vec2::splat(0.9), 1.0), Vec3::ZERO);
+        assert!(scene.pick(Vec2::splat(0.9), 1.0).is_none());
     }
 
     const TOLERANCE: f32 = 0.0001;

@@ -82,9 +82,15 @@ async function run() {
       if (dragged) return;
       const rect = canvas.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
-      app.focus((event.clientX - rect.left) / rect.width * 2 - 1,
-        1 - (event.clientY - rect.top) / rect.height * 2, rect.width / rect.height);
-      requestDraw();
+      try {
+        const label = app.focus((event.clientX - rect.left) / rect.width * 2 - 1,
+          1 - (event.clientY - rect.top) / rect.height * 2, rect.width / rect.height);
+        status.textContent = label ?? '';
+        status.hidden = !label;
+        requestDraw();
+      } catch (error) {
+        report(error);
+      }
     });
     canvas.addEventListener('wheel', (event) => {
       event.preventDefault();
