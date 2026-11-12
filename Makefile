@@ -1,6 +1,6 @@
 WASM_BINDGEN ?= wasm-bindgen
 
-.PHONY: web serve check
+.PHONY: web serve check install-tools
 
 web:
 	cargo build --release --target wasm32-unknown-unknown
@@ -15,3 +15,6 @@ check:
 	cargo clippy --target wasm32-unknown-unknown -- -D warnings
 	cargo clippy --all-targets -- -D warnings
 	cargo test --lib
+
+install-tools:
+	cargo install wasm-bindgen-cli --version 0.2.126 --locked
