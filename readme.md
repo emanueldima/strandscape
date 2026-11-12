@@ -27,7 +27,7 @@ size and display scale, schedules redraws, and displays errors. `src/web.rs`
 exposes `WebApp.create(canvas, bytes, width, height, scale)`, `resize`, and `draw`.
 wgpu selects WebGPU when available and falls back to WebGL2.
 
-Move the mouse to orbit around the focus. Click a plane to focus on the hit point;
+Drag with the left mouse button to orbit around the focus. Click a plane to focus on the hit point;
 click empty space to focus on the origin. The camera turns without changing position.
 Scroll up to move closer or down to move farther, within 0.25–50 world units.
 

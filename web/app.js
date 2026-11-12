@@ -45,18 +45,41 @@ async function run() {
       frame = requestAnimationFrame(draw);
     }
 
+    const dragThreshold = 3;
     let pointer = null;
-    canvas.addEventListener('mousemove', (event) => {
+    let dragged = false;
+    canvas.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || pointer) return;
+      pointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      dragged = false;
+      canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (!pointer || event.pointerId !== pointer.id) return;
+      if (!(event.buttons & 1)) {
+        pointer = null;
+        return;
+      }
+      const x = event.clientX - pointer.x;
+      const y = event.clientY - pointer.y;
+      // Keep small click movements from becoming drags.
+      if (!dragged && Math.hypot(x, y) < dragThreshold) return;
+      dragged = true;
       const rect = canvas.getBoundingClientRect();
-      if (pointer && rect.width > 0 && rect.height > 0) {
-        app.orbit((event.clientX - pointer[0]) / rect.width,
-          (event.clientY - pointer[1]) / rect.height);
+      if (rect.width > 0 && rect.height > 0) {
+        app.orbit(-x / rect.width, -y / rect.height);
         requestDraw();
       }
-      pointer = [event.clientX, event.clientY];
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
     });
-    canvas.addEventListener('mouseleave', () => { pointer = null; });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+      canvas.addEventListener(type, (event) => {
+        if (event.pointerId === pointer?.id) pointer = null;
+      });
+    }
     canvas.addEventListener('click', (event) => {
+      if (dragged) return;
       const rect = canvas.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       app.focus((event.clientX - rect.left) / rect.width * 2 - 1,
