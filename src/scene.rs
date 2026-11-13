@@ -23,14 +23,22 @@ pub(crate) struct Hit {
 
 pub(crate) enum Item {
     Plane(Plane),
+    Dot(Dot),
     Text(Text),
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct Transform {
+    pub(crate) space: Space,
     pub(crate) translation: Vec3,
     pub(crate) rotation: Quat,
     pub(crate) scale: Vec3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Space {
+    World,
+    Hud,
 }
 
 pub(crate) struct Plane {
@@ -39,10 +47,17 @@ pub(crate) struct Plane {
     pub(crate) color: [f32; 4],
 }
 
+pub(crate) struct Dot {
+    pub(crate) transform: Transform,
+    pub(crate) radius: f32,
+    pub(crate) color: [f32; 4],
+}
+
 pub(crate) struct Text {
     pub(crate) transform: Transform,
     pub(crate) spec: TextSpec,
     pub(crate) color: [f32; 4],
+    pub(crate) background: Option<[f32; 4]>,
 }
 
 impl Scene {
@@ -53,15 +68,43 @@ impl Scene {
         }
     }
 
-    pub(crate) fn pick(&self, point: Vec2, aspect: f32) -> Option<Hit> {
-        let ray = self.camera.ray(point, aspect)?;
+    pub(crate) fn pick(&self, point: Vec2, viewport: Vec2) -> Option<Hit> {
+        if !point.is_finite() || !viewport.is_finite() || viewport.min_element() <= 0.0 {
+            return None;
+        }
+
+        // HUD coordinates use CSS pixels from the top-left, with Y pointing up.
+        let hud_ray = Ray {
+            origin: Vec3::new(
+                (point.x + 1.0) * viewport.x * 0.5,
+                (point.y - 1.0) * viewport.y * 0.5,
+                1.0,
+            ),
+            direction: -Vec3::Z,
+        };
+        let hud_hit = self
+            .items
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, item)| {
+                item.hit(&hud_ray, Space::Hud).map(|distance| Hit {
+                    item: index,
+                    point: hud_ray.origin + hud_ray.direction * distance,
+                })
+            });
+        if hud_hit.is_some() {
+            return hud_hit;
+        }
+
+        let ray = self.camera.ray(point, viewport.x / viewport.y)?;
 
         self.items
             .iter()
             .enumerate()
-            .filter_map(|(index, item)| match item {
-                Item::Plane(plane) => plane.hit(&ray).map(|distance| (index, distance)),
-                Item::Text(_) => None,
+            .filter_map(|(index, item)| {
+                item.hit(&ray, Space::World)
+                    .map(|distance| (index, distance))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(item, distance)| Hit {
@@ -71,10 +114,19 @@ impl Scene {
     }
 }
 
-impl Plane {
-    fn hit(&self, ray: &Ray) -> Option<f32> {
+impl Item {
+    fn hit(&self, ray: &Ray, space: Space) -> Option<f32> {
+        let (transform, bounds) = match self {
+            Self::Plane(plane) => (plane.transform, plane.size * 0.5),
+            Self::Dot(dot) => (dot.transform, Vec2::splat(dot.radius)),
+            Self::Text(_) => return None,
+        };
+        if transform.space != space {
+            return None;
+        }
+
         // Preserve the ray parameter while testing the plane in its local bounds.
-        let local_from_world = self.transform.matrix().inverse();
+        let local_from_world = transform.matrix().inverse();
         let origin = local_from_world.transform_point3(ray.origin);
         let direction = local_from_world.transform_vector3(ray.direction);
         if direction.z.abs() <= f32::EPSILON {
@@ -86,19 +138,31 @@ impl Plane {
             return None;
         }
 
-        let point = origin + direction * distance;
-        point
-            .truncate()
-            .abs()
-            .cmple(self.size * 0.5)
-            .all()
-            .then_some(distance)
+        let point = (origin + direction * distance).truncate();
+        let inside = match self {
+            Self::Dot(dot) => point.length_squared() <= dot.radius * dot.radius,
+            _ => point.abs().cmple(bounds).all(),
+        };
+        inside.then_some(distance)
     }
 }
 
 impl Transform {
     pub(crate) fn matrix(self) -> Mat4 {
         Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
+    }
+
+    pub(crate) fn clip_from_local(self, clip_from_world: Mat4, viewport: Vec2) -> Mat4 {
+        let projection = match self.space {
+            Space::World => clip_from_world,
+            // Depth zero keeps HUD text in front of world geometry.
+            Space::Hud => Mat4::from_scale_rotation_translation(
+                Vec3::new(2.0 / viewport.x, 2.0 / viewport.y, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(-1.0, 1.0, 0.0),
+            ),
+        };
+        projection * self.matrix()
     }
 }
 
@@ -120,7 +184,9 @@ mod tests {
                 })
                 .collect();
             let scene = scene(items);
-            let hit = scene.pick(Vec2::new(0.1, 0.1), 1.6).unwrap();
+            let hit = scene
+                .pick(Vec2::new(0.1, 0.1), Vec2::new(1600.0, 1000.0))
+                .unwrap();
             assert!(hit.point.abs_diff_eq(Vec3::new(0.64, 0.4, 2.0), TOLERANCE));
             assert_eq!(depths[hit.item], 2.0);
         }
@@ -143,7 +209,7 @@ mod tests {
         let point = projection.project_point3(target).truncate();
         assert!(
             scene
-                .pick(point, 1.6)
+                .pick(point, Vec2::new(1600.0, 1000.0))
                 .unwrap()
                 .point
                 .abs_diff_eq(target, TOLERANCE)
@@ -151,7 +217,44 @@ mod tests {
 
         let outside = transform.transform_point3(Vec3::new(1.2, 0.0, 0.0));
         let point = projection.project_point3(outside).truncate();
-        assert!(scene.pick(point, 1.6).is_none());
+        assert!(scene.pick(point, Vec2::new(1600.0, 1000.0)).is_none());
+    }
+
+    #[test]
+    fn picks_round_dot_bounds() {
+        let viewport = Vec2::new(800.0, 600.0);
+        for space in [Space::World, Space::Hud] {
+            let transform = Transform {
+                space,
+                translation: if space == Space::Hud {
+                    Vec3::new(120.0, -126.0, 0.0)
+                } else {
+                    Vec3::new(1.0, 0.4, 1.0)
+                },
+                rotation: Quat::from_rotation_z(0.3),
+                scale: if space == Space::Hud {
+                    Vec3::splat(20.0)
+                } else {
+                    Vec3::ONE
+                },
+            };
+            let scene = scene(vec![Item::Dot(Dot {
+                transform,
+                radius: 1.0,
+                color: [1.0; 4],
+            })]);
+            let clip = transform.clip_from_local(
+                scene
+                    .camera
+                    .clip_from_world(viewport.x / viewport.y)
+                    .unwrap(),
+                viewport,
+            );
+            let inside = clip.project_point3(Vec3::new(0.8, 0.0, 0.0)).truncate();
+            let corner = clip.project_point3(Vec3::new(0.8, 0.8, 0.0)).truncate();
+            assert_eq!(scene.pick(inside, viewport).unwrap().item, 0);
+            assert!(scene.pick(corner, viewport).is_none());
+        }
     }
 
     #[test]
@@ -170,14 +273,84 @@ mod tests {
             )]),
         ];
         for scene in scenes {
-            assert!(scene.pick(Vec2::ZERO, 1.0).is_none());
+            assert!(scene.pick(Vec2::ZERO, Vec2::splat(1000.0)).is_none());
         }
         let scene = scene(vec![plane(
             Vec3::new(0.0, 0.0, 2.0),
             Quat::IDENTITY,
             Vec3::ONE,
         )]);
-        assert!(scene.pick(Vec2::splat(0.9), 1.0).is_none());
+        assert!(scene.pick(Vec2::splat(0.9), Vec2::splat(1000.0)).is_none());
+    }
+
+    #[test]
+    fn hud_keeps_screen_coordinates() {
+        let transform = Transform {
+            space: Space::Hud,
+            translation: Vec3::new(24.0, -24.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+        let mut scene = scene(vec![]);
+        for viewport in [
+            Vec2::new(800.0, 600.0),
+            Vec2::new(1600.0, 900.0),
+            Vec2::new(600.0, 800.0),
+        ] {
+            let aspect = viewport.x / viewport.y;
+            let before =
+                transform.clip_from_local(scene.camera.clip_from_world(aspect).unwrap(), viewport);
+            scene.camera.orbit(Vec2::new(0.2, 0.1));
+            scene.camera.pan(Vec2::new(0.1, -0.2));
+            scene.camera.zoom(-250.0);
+            scene.camera.focus(Vec3::new(3.0, 2.0, 1.0));
+            let after =
+                transform.clip_from_local(scene.camera.clip_from_world(aspect).unwrap(), viewport);
+            assert_eq!(before, after);
+
+            let point = after.project_point3(Vec3::new(12.0, -8.0, 0.0));
+            let pixels = Vec2::new(
+                (point.x + 1.0) * viewport.x * 0.5,
+                (1.0 - point.y) * viewport.y * 0.5,
+            );
+            assert!(pixels.abs_diff_eq(Vec2::new(36.0, 32.0), TOLERANCE));
+            assert_eq!(point.z, 0.0);
+        }
+    }
+
+    #[test]
+    fn picks_hud_before_world() {
+        let mut hud = plane(Vec3::new(120.0, -126.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+        let Item::Plane(ref mut label) = hud else {
+            unreachable!()
+        };
+        label.transform.space = Space::Hud;
+        label.size = Vec2::new(200.0, 28.0);
+        let mut scene = scene(vec![
+            hud,
+            plane(Vec3::ZERO, Quat::IDENTITY, Vec3::splat(100.0)),
+        ]);
+        let viewport = Vec2::new(800.0, 600.0);
+        let inside = Vec2::new(
+            120.0 / viewport.x * 2.0 - 1.0,
+            1.0 - 126.0 / viewport.y * 2.0,
+        );
+        let outside = Vec2::new(230.0 / viewport.x * 2.0 - 1.0, inside.y);
+        assert_eq!(scene.pick(inside, viewport).unwrap().item, 0);
+        assert_eq!(scene.pick(outside, viewport).unwrap().item, 1);
+
+        scene.camera.orbit(Vec2::new(0.2, 0.1));
+        scene.camera.pan(Vec2::new(0.1, -0.2));
+        scene.camera.zoom(-250.0);
+        scene.camera.focus(Vec3::new(3.0, 2.0, 1.0));
+        let hit = scene.pick(inside, viewport).unwrap();
+        assert_eq!(hit.item, 0);
+        assert!(
+            hit.point
+                .abs_diff_eq(Vec3::new(120.0, -126.0, 0.0), TOLERANCE)
+        );
+        assert!(scene.pick(inside, Vec2::ZERO).is_none());
+        assert!(scene.pick(Vec2::NAN, viewport).is_none());
     }
 
     const TOLERANCE: f32 = 0.0001;
@@ -198,6 +371,7 @@ mod tests {
     fn plane(position: Vec3, rotation: Quat, scale: Vec3) -> Item {
         Item::Plane(Plane {
             transform: Transform {
+                space: Space::World,
                 translation: position,
                 rotation,
                 scale,

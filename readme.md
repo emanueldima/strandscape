@@ -24,9 +24,9 @@ Information from multiple sources can be explored together, with its origins pre
 | Module | Responsibility |
 | --- | --- |
 | `events` | Parse and validate event data. |
-| `composer` | Combine events with requested context. |
+| `composer` | Infer map context and compose event strands. |
 | `sculptor` | Translate compositions into scene primitives. |
-| `scene` | Scene primitives and hit testing. |
+| `scene` | World/HUD primitives and hit testing. |
 | `camera` | Projection, orbit, focus, and zoom. |
 | `text` | Shape text and rasterize glyphs. |
 | `render` | Convert scenes into drawing data. |
@@ -47,11 +47,24 @@ web/app.js
 └── WebApp::draw()
     └── render::Renderer::draw(scene)
         ├── camera::Camera::clip_from_world(...)
+        ├── scene::Transform::clip_from_local(...) → world or HUD projection
         ├── text::FontSystem::{layout, rasterize}(...)
         └── render::gpu::Gpu::draw(draw_list)
             ├── render::text::TextRenderer::{prepare, draw}(...)
             └── wgpu → canvas
 ```
+
+The current experiment uses one schematic map with a chronological polyline above
+it. The initial view looks straight down, with north at the top.
+Longitude and latitude determine horizontal position; elapsed time determines
+height. Place names sit on the map; event points have no labels. A bottom HUD
+timeline includes every event, with time-proportional gaps clamped to a 24 CSS-pixel
+minimum. Scroll over its bottom strip to move an overflowing timeline horizontally;
+the rest of the HUD stays fixed. Selecting an event enlarges and highlights its HUD
+and 3D dots, and shows its date and description in an opaque HUD pane. Titles and
+reference text stay on the HUD. Unknown locations break the 3D line; selecting them
+leaves the camera unchanged. All events, including Princeton, remain available.
+Historical geography is deferred.
 
 ## Development
 

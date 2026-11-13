@@ -84,7 +84,7 @@ async function run() {
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
         const label = app.focus((event.clientX - rect.left) / rect.width * 2 - 1,
-          1 - (event.clientY - rect.top) / rect.height * 2, rect.width / rect.height);
+          1 - (event.clientY - rect.top) / rect.height * 2);
         status.textContent = label ?? '';
         status.hidden = !label;
         requestDraw();
@@ -98,14 +98,22 @@ async function run() {
       const lineHeight = 16;
       const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? lineHeight
         : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? canvas.clientHeight : 1;
-      if (event.ctrlKey) {
-        app.zoom(event.deltaY * unit);
-      } else {
-        const rect = canvas.getBoundingClientRect();
-        if (rect.height <= 0) return;
-        app.pan(event.deltaX * unit / rect.height, event.deltaY * unit / rect.height);
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      try {
+        if (event.ctrlKey || event.metaKey) {
+          app.zoom(event.deltaY * unit);
+        } else if (!app.scroll_timeline(
+          (event.clientX - rect.left) / rect.width * 2 - 1,
+          1 - (event.clientY - rect.top) / rect.height * 2,
+          (Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY) * unit,
+        )) {
+          app.pan(event.deltaX * unit / rect.height, event.deltaY * unit / rect.height);
+        }
+        requestDraw();
+      } catch (error) {
+        report(error);
       }
-      requestDraw();
     }, { passive: false });
 
     // Rearm the query after each display-scale change.

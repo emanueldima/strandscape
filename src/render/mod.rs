@@ -3,12 +3,12 @@ mod text;
 
 use {
     crate::{
-        scene::{Item, Scene},
+        scene::{Item, Scene, Space},
         text::{FontError, FontSystem, GlyphImage, GlyphKey, TextLayout},
     },
     bytemuck::{Pod, Zeroable},
-    glam::{Mat4, Vec3},
-    std::collections::HashMap,
+    glam::{Mat4, Vec2, Vec3},
+    std::{cmp::Ordering, collections::HashMap},
     thiserror::Error,
 };
 
@@ -74,6 +74,8 @@ impl Renderer {
             .camera
             .clip_from_world(self.viewport.width as f32 / self.viewport.height as f32)
             .ok_or(RenderError::InvalidView)?;
+        let viewport = Vec2::new(self.viewport.width as f32, self.viewport.height as f32)
+            / self.viewport.scale_factor as f32;
         let mut list = DrawList {
             planes: Vec::new(),
             text: TextBatch {
@@ -86,7 +88,12 @@ impl Renderer {
         for item in &scene.items {
             match item {
                 Item::Plane(plane) => {
-                    let clip_from_local = clip_from_world * plane.transform.matrix();
+                    // Invisible hit areas must not draw or occlude scene geometry.
+                    if plane.color[3] == 0.0 {
+                        continue;
+                    }
+                    let clip_from_local =
+                        plane.transform.clip_from_local(clip_from_world, viewport);
                     for [x, y] in QUAD {
                         list.planes.push(PlaneVertex {
                             position: (clip_from_local
@@ -94,6 +101,25 @@ impl Renderer {
                             .to_array(),
                             color: plane.color,
                         });
+                    }
+                }
+                Item::Dot(dot) => {
+                    let clip_from_local = dot.transform.clip_from_local(clip_from_world, viewport);
+                    // Round markers share the plane pipeline through a triangle fan.
+                    for segment in 0..DOT_SEGMENTS {
+                        let angle = segment as f32 * std::f32::consts::TAU / DOT_SEGMENTS as f32;
+                        let next =
+                            (segment + 1) as f32 * std::f32::consts::TAU / DOT_SEGMENTS as f32;
+                        for point in [
+                            Vec3::ZERO,
+                            Vec3::new(angle.cos(), angle.sin(), 0.0) * dot.radius,
+                            Vec3::new(next.cos(), next.sin(), 0.0) * dot.radius,
+                        ] {
+                            list.planes.push(PlaneVertex {
+                                position: (clip_from_local * point.extend(1.0)).to_array(),
+                                color: dot.color,
+                            });
+                        }
                     }
                 }
                 Item::Text(text) => {
@@ -110,13 +136,16 @@ impl Renderer {
                     }
                     list.text.runs.push(TextDraw {
                         layout,
-                        clip_from_local: clip_from_world * text.transform.matrix(),
+                        clip_from_local: text.transform.clip_from_local(clip_from_world, viewport),
                         color: text.color,
+                        background: text.background,
+                        space: text.transform.space,
                     });
                 }
             }
         }
 
+        sort_text(&mut list.text.runs);
         self.gpu.draw(&list)
     }
 
@@ -140,6 +169,8 @@ struct TextDraw {
     layout: TextLayout,
     clip_from_local: Mat4,
     color: [f32; 4],
+    background: Option<[f32; 4]>,
+    space: Space,
 }
 
 #[repr(C)]
@@ -158,8 +189,55 @@ const QUAD: [[f32; 2]; 6] = [
     [-0.5, 0.5],
 ];
 
+const DOT_SEGMENTS: usize = 24;
+
+fn sort_text(runs: &mut [TextDraw]) {
+    // Blend distant labels first; keep HUD order stable above the world.
+    runs.sort_by(|a, b| {
+        (a.space == Space::Hud)
+            .cmp(&(b.space == Space::Hud))
+            .then_with(|| {
+                if a.space == Space::Hud {
+                    return Ordering::Equal;
+                }
+                let a_depth = a.clip_from_local.project_point3(Vec3::ZERO).z;
+                let b_depth = b.clip_from_local.project_point3(Vec3::ZERO).z;
+                b_depth.total_cmp(&a_depth)
+            })
+    });
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn orders_world_before_hud() {
+        let mut runs: Vec<_> = [
+            (Space::Hud, 0.0),
+            (Space::World, 0.2),
+            (Space::World, 0.9),
+            (Space::Hud, 0.0),
+            (Space::World, 0.5),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (space, depth))| TextDraw {
+            layout: TextLayout {
+                bounds: [100.0, 27.0],
+                glyphs: Vec::new().into(),
+            },
+            clip_from_local: Mat4::from_translation(Vec3::Z * depth),
+            color: [index as f32, 0.0, 0.0, 1.0],
+            background: None,
+            space,
+        })
+        .collect();
+        sort_text(&mut runs);
+        let order: Vec<_> = runs.iter().map(|run| run.color[0] as usize).collect();
+        assert_eq!(order, [2, 4, 1, 0, 3]);
+    }
+
     #[test]
     fn validates_shaders() {
         for source in [include_str!("plane.wgsl"), include_str!("text.wgsl")] {

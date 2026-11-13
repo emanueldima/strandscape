@@ -96,7 +96,7 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
-        let text = TextRenderer::new(&device, color_format, DEPTH_FORMAT);
+        let text = TextRenderer::new(&device, &queue, color_format, DEPTH_FORMAT);
         let [r, g, b, a] = config.clear_color;
         Ok(Self {
             surface,

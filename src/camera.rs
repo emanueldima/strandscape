@@ -76,8 +76,9 @@ impl Camera {
     }
 
     pub(crate) fn focus(&mut self, point: Vec3) {
+        // Recenter without changing the viewing angle or distance.
+        self.position += point - self.focus;
         self.focus = point;
-        self.aim();
     }
 
     pub(crate) fn zoom(&mut self, scroll: f32) {
@@ -136,9 +137,9 @@ impl Camera {
             return;
         }
 
-        // A vertical target needs a different up vector to keep the view invertible.
+        // A vertical view uses map north as up to stay upright and invertible.
         let up = if forward.normalize().cross(Vec3::Y).length_squared() <= f32::EPSILON {
-            Vec3::Z
+            -Vec3::Z
         } else {
             Vec3::Y
         };
@@ -240,20 +241,20 @@ mod tests {
     }
 
     #[test]
-    fn focus_turns_without_moving() {
+    fn focus_keeps_angle_and_distance() {
         let mut camera = camera();
+        camera.orbit(Vec2::new(0.1, 0.05));
+        camera.zoom(-100.0);
         let position = camera.position;
+        let offset = position - camera.focus;
+        let rotation = camera.rotation;
         for focus in [Vec3::X, position + Vec3::Y, position, Vec3::ZERO] {
             camera.focus(focus);
-            assert_eq!(camera.position, position);
-            let ray = camera.ray(Vec2::ZERO, 1.0).unwrap();
-            assert!(ray.direction.is_finite());
-            if focus != position {
-                assert!(
-                    ray.direction
-                        .abs_diff_eq((focus - position).normalize(), TOLERANCE)
-                );
-            }
+            assert_eq!(camera.focus, focus);
+            assert_eq!(camera.rotation, rotation);
+            assert!((camera.position - focus).abs_diff_eq(offset, TOLERANCE));
+            let projected = camera.clip_from_world(1.0).unwrap().project_point3(focus);
+            assert!(projected.truncate().abs_diff_eq(Vec2::ZERO, TOLERANCE));
         }
     }
 
@@ -280,7 +281,7 @@ mod tests {
     #[test]
     fn zoom_handles_coincident_focus() {
         let mut camera = camera();
-        camera.focus(camera.position);
+        camera.position = camera.focus;
         camera.zoom(100_000.0);
         assert!((camera.position.distance(camera.focus) - MAX_DISTANCE).abs() < TOLERANCE);
         assert!(camera.ray(Vec2::ZERO, 1.0).unwrap().direction.is_finite());
