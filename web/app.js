@@ -94,11 +94,17 @@ async function run() {
     });
     canvas.addEventListener('wheel', (event) => {
       event.preventDefault();
-      // Normalize line/page scrolling to CSS pixels before proportional zoom.
+      // Normalize scrolling to CSS pixels; Ctrl also covers trackpad pinch zoom.
       const lineHeight = 16;
       const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? lineHeight
         : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? canvas.clientHeight : 1;
-      app.zoom(event.deltaY * unit);
+      if (event.ctrlKey) {
+        app.zoom(event.deltaY * unit);
+      } else {
+        const rect = canvas.getBoundingClientRect();
+        if (rect.height <= 0) return;
+        app.pan(event.deltaX * unit / rect.height, event.deltaY * unit / rect.height);
+      }
       requestDraw();
     }, { passive: false });
 

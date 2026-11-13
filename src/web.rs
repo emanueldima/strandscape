@@ -78,6 +78,10 @@ impl WebApp {
         self.output.scene.camera.orbit(Vec2::new(x, y));
     }
 
+    pub fn pan(&mut self, x: f32, y: f32) {
+        self.output.scene.camera.pan(Vec2::new(x, y));
+    }
+
     pub fn focus(&mut self, x: f32, y: f32, aspect: f32) -> Result<Option<String>, JsError> {
         let Some(hit) = self.output.scene.pick(Vec2::new(x, y), aspect) else {
             self.output.scene.camera.focus(Vec3::ZERO);

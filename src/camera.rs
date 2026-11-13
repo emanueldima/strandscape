@@ -63,6 +63,18 @@ impl Camera {
         self.aim();
     }
 
+    pub(crate) fn pan(&mut self, delta: Vec2) {
+        if !delta.is_finite() || delta == Vec2::ZERO {
+            return;
+        }
+
+        // Scale viewport-height deltas at the focus depth for consistent scrolling.
+        let span = 2.0 * self.position.distance(self.focus) * (self.vertical_fov * 0.5).tan();
+        let movement = self.rotation * Vec3::new(delta.x, -delta.y, 0.0) * span;
+        self.position += movement;
+        self.focus += movement;
+    }
+
     pub(crate) fn focus(&mut self, point: Vec3) {
         self.focus = point;
         self.aim();
@@ -172,6 +184,58 @@ mod tests {
             assert!(camera.position.z > 0.0);
             assert!((camera.position.length() - 6.0).abs() < TOLERANCE);
             assert!(camera.clip_from_world(1.0).unwrap().is_finite());
+        }
+    }
+
+    #[test]
+    fn pan_moves_in_view_plane() {
+        for orbit in [Vec2::ZERO, Vec2::new(0.2, 0.1)] {
+            for scroll in [0.0, -500.0] {
+                let mut camera = camera();
+                camera.orbit(orbit);
+                camera.zoom(scroll);
+                let position = camera.position;
+                let focus = camera.focus;
+                let rotation = camera.rotation;
+                let delta = Vec2::new(0.1, 0.2);
+                camera.pan(delta);
+
+                let movement = camera.position - position;
+                let span = 2.0 * position.distance(focus) * (camera.vertical_fov * 0.5).tan();
+                assert!(
+                    movement.abs_diff_eq(rotation * Vec3::new(0.1, -0.2, 0.0) * span, TOLERANCE)
+                );
+                assert!(camera.focus.abs_diff_eq(focus + movement, TOLERANCE));
+                assert_eq!(camera.rotation, rotation);
+
+                for aspect in [0.5, 1.0, 2.0] {
+                    let point = camera
+                        .clip_from_world(aspect)
+                        .unwrap()
+                        .project_point3(focus);
+                    assert!(
+                        point
+                            .truncate()
+                            .abs_diff_eq(Vec2::new(-0.2 / aspect, 0.4), TOLERANCE)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pan_ignores_invalid_input() {
+        let mut camera = camera();
+        let position = camera.position;
+        let focus = camera.focus;
+        for delta in [
+            Vec2::ZERO,
+            Vec2::new(f32::NAN, 0.0),
+            Vec2::new(0.0, f32::INFINITY),
+        ] {
+            camera.pan(delta);
+            assert_eq!(camera.position, position);
+            assert_eq!(camera.focus, focus);
         }
     }
 
