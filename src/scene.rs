@@ -24,6 +24,8 @@ pub(crate) struct Hit {
 pub(crate) enum Item {
     Plane(Plane),
     Dot(Dot),
+    Sphere(Sphere),
+    Tube(Tube),
     Text(Text),
 }
 
@@ -53,6 +55,19 @@ pub(crate) struct Dot {
     pub(crate) color: [f32; 4],
 }
 
+pub(crate) struct Sphere {
+    pub(crate) center: Vec3,
+    pub(crate) radius: f32,
+    pub(crate) color: [f32; 4],
+}
+
+pub(crate) struct Tube {
+    pub(crate) start: Vec3,
+    pub(crate) end: Vec3,
+    pub(crate) radius: f32,
+    pub(crate) color: [f32; 4],
+}
+
 pub(crate) struct Text {
     pub(crate) transform: Transform,
     pub(crate) spec: TextSpec,
@@ -69,7 +84,12 @@ impl Scene {
         }
     }
 
-    pub(crate) fn pick(&self, point: Vec2, viewport: Vec2) -> Option<Hit> {
+    pub(crate) fn pick(
+        &self,
+        point: Vec2,
+        viewport: Vec2,
+        eligible: impl Fn(usize) -> bool,
+    ) -> Option<Hit> {
         if !point.is_finite() || !viewport.is_finite() || viewport.min_element() <= 0.0 {
             return None;
         }
@@ -103,6 +123,8 @@ impl Scene {
         self.items
             .iter()
             .enumerate()
+            // Ignore decorative world items before choosing the nearest surface.
+            .filter(|(index, _)| eligible(*index))
             .filter_map(|(index, item)| {
                 item.hit(&ray, Space::World)
                     .map(|distance| (index, distance))
@@ -112,12 +134,33 @@ impl Scene {
                 item,
                 point: ray.origin + ray.direction * distance,
             })
+            .filter(|hit| hit.point.is_finite())
     }
 }
 
 impl Item {
     fn hit(&self, ray: &Ray, space: Space) -> Option<f32> {
         let (transform, min, max) = match self {
+            Self::Tube(_) => return None,
+            Self::Sphere(sphere) => {
+                if space != Space::World || !sphere.radius.is_finite() || sphere.radius <= 0.0 {
+                    return None;
+                }
+
+                // Find the nearest forward surface, including rays starting inside.
+                let offset = ray.origin - sphere.center;
+                let speed = ray.direction.length_squared();
+                let along = -offset.dot(ray.direction) / speed;
+                let closest = offset + ray.direction * along;
+                let chord = (sphere.radius * sphere.radius - closest.length_squared()) / speed;
+                if chord < 0.0 {
+                    return None;
+                }
+                let near = along - chord.sqrt();
+                let far = along + chord.sqrt();
+                let distance = if near > 0.0 { near } else { far };
+                return (distance.is_finite() && distance > 0.0).then_some(distance);
+            }
             Self::Plane(plane) => (plane.transform, -plane.size * 0.5, plane.size * 0.5),
             Self::Dot(dot) => (
                 dot.transform,
@@ -201,11 +244,39 @@ mod tests {
                 .collect();
             let scene = scene(items);
             let hit = scene
-                .pick(Vec2::new(0.1, 0.1), Vec2::new(1600.0, 1000.0))
+                .pick(Vec2::new(0.1, 0.1), Vec2::new(1600.0, 1000.0), |_| true)
                 .unwrap();
             assert!(hit.point.abs_diff_eq(Vec3::new(0.64, 0.4, 2.0), TOLERANCE));
             assert_eq!(depths[hit.item], 2.0);
         }
+    }
+
+    #[test]
+    fn filters_world_candidates() {
+        let scene = scene(vec![
+            plane(Vec3::Z * 2.0, Quat::IDENTITY, Vec3::ONE),
+            Item::Sphere(Sphere {
+                center: Vec3::ZERO,
+                radius: 1.0,
+                color: [1.0; 4],
+            }),
+        ]);
+        let viewport = Vec2::new(800.0, 600.0);
+        assert_eq!(
+            scene
+                .pick(Vec2::ZERO, viewport, |index| index == 0)
+                .unwrap()
+                .item,
+            0
+        );
+        assert_eq!(
+            scene
+                .pick(Vec2::ZERO, viewport, |index| index == 1)
+                .unwrap()
+                .item,
+            1
+        );
+        assert!(scene.pick(Vec2::ZERO, viewport, |_| false).is_none());
     }
 
     #[test]
@@ -225,7 +296,7 @@ mod tests {
         let point = projection.project_point3(target).truncate();
         assert!(
             scene
-                .pick(point, Vec2::new(1600.0, 1000.0))
+                .pick(point, Vec2::new(1600.0, 1000.0), |_| true)
                 .unwrap()
                 .point
                 .abs_diff_eq(target, TOLERANCE)
@@ -233,7 +304,73 @@ mod tests {
 
         let outside = transform.transform_point3(Vec3::new(1.2, 0.0, 0.0));
         let point = projection.project_point3(outside).truncate();
-        assert!(scene.pick(point, Vec2::new(1600.0, 1000.0)).is_none());
+        assert!(
+            scene
+                .pick(point, Vec2::new(1600.0, 1000.0), |_| true)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn picks_spheres_from_any_angle() {
+        let viewport = Vec2::new(800.0, 600.0);
+        let mut scene = scene(vec![Item::Sphere(Sphere {
+            center: Vec3::ZERO,
+            radius: 1.0,
+            color: [1.0; 4],
+        })]);
+        for orbit in [Vec2::ZERO, Vec2::new(0.5, 0.0), Vec2::new(0.25, 0.2)] {
+            scene.camera.orbit(orbit);
+            let ray = scene
+                .camera
+                .ray(Vec2::ZERO, viewport.x / viewport.y)
+                .unwrap();
+            let hit = scene.pick(Vec2::ZERO, viewport, |_| true).unwrap();
+            assert_eq!(hit.item, 0);
+            assert!((hit.point.length() - 1.0).abs() < TOLERANCE);
+            assert!(
+                (ray.origin.distance(hit.point) - (ray.origin.length() - 1.0)).abs() < TOLERANCE
+            );
+            assert!(scene.pick(Vec2::splat(0.9), viewport, |_| true).is_none());
+        }
+    }
+
+    #[test]
+    fn sphere_roots_and_occlusion() {
+        let sphere = Item::Sphere(Sphere {
+            center: Vec3::ZERO,
+            radius: 1.0,
+            color: [1.0; 4],
+        });
+        for (origin, distance) in [
+            (Vec3::ZERO, Some(1.0)),
+            (Vec3::new(-2.0, 1.0, 0.0), Some(2.0)),
+            (Vec3::new(-2.0, 1.01, 0.0), None),
+            (Vec3::new(2.0, 0.0, 0.0), None),
+        ] {
+            let ray = Ray {
+                origin,
+                direction: Vec3::X,
+            };
+            assert_eq!(sphere.hit(&ray, Space::World), distance);
+            assert!(sphere.hit(&ray, Space::Hud).is_none());
+        }
+
+        // Pick the nearest surface, rather than the nearest center.
+        let mut scene = scene(vec![
+            sphere,
+            Item::Sphere(Sphere {
+                center: Vec3::Z * 0.5,
+                radius: 0.2,
+                color: [1.0; 4],
+            }),
+        ]);
+        let viewport = Vec2::new(800.0, 600.0);
+        assert_eq!(scene.pick(Vec2::ZERO, viewport, |_| true).unwrap().item, 0);
+        scene
+            .items
+            .push(plane(Vec3::Z * 2.0, Quat::IDENTITY, Vec3::ONE));
+        assert_eq!(scene.pick(Vec2::ZERO, viewport, |_| true).unwrap().item, 2);
     }
 
     #[test]
@@ -268,8 +405,8 @@ mod tests {
             );
             let inside = clip.project_point3(Vec3::new(0.8, 0.0, 0.0)).truncate();
             let corner = clip.project_point3(Vec3::new(0.8, 0.8, 0.0)).truncate();
-            assert_eq!(scene.pick(inside, viewport).unwrap().item, 0);
-            assert!(scene.pick(corner, viewport).is_none());
+            assert_eq!(scene.pick(inside, viewport, |_| true).unwrap().item, 0);
+            assert!(scene.pick(corner, viewport, |_| true).is_none());
         }
     }
 
@@ -327,7 +464,7 @@ mod tests {
                 ] {
                     let point = clip.project_point3(local).truncate();
                     assert_eq!(
-                        scene.pick(point, viewport).is_some(),
+                        scene.pick(point, viewport, |_| true).is_some(),
                         inside && background.is_some()
                     );
                 }
@@ -337,7 +474,7 @@ mod tests {
                 };
                 text.layout = None;
                 let point = clip.project_point3(Vec3::new(50.0, -13.5, 0.0)).truncate();
-                assert!(scene.pick(point, viewport).is_none());
+                assert!(scene.pick(point, viewport, |_| true).is_none());
             }
         }
     }
@@ -358,14 +495,22 @@ mod tests {
             )]),
         ];
         for scene in scenes {
-            assert!(scene.pick(Vec2::ZERO, Vec2::splat(1000.0)).is_none());
+            assert!(
+                scene
+                    .pick(Vec2::ZERO, Vec2::splat(1000.0), |_| true)
+                    .is_none()
+            );
         }
         let scene = scene(vec![plane(
             Vec3::new(0.0, 0.0, 2.0),
             Quat::IDENTITY,
             Vec3::ONE,
         )]);
-        assert!(scene.pick(Vec2::splat(0.9), Vec2::splat(1000.0)).is_none());
+        assert!(
+            scene
+                .pick(Vec2::splat(0.9), Vec2::splat(1000.0), |_| true)
+                .is_none()
+        );
     }
 
     #[test]
@@ -421,21 +566,21 @@ mod tests {
             1.0 - 126.0 / viewport.y * 2.0,
         );
         let outside = Vec2::new(230.0 / viewport.x * 2.0 - 1.0, inside.y);
-        assert_eq!(scene.pick(inside, viewport).unwrap().item, 0);
-        assert_eq!(scene.pick(outside, viewport).unwrap().item, 1);
+        assert_eq!(scene.pick(inside, viewport, |_| false).unwrap().item, 0);
+        assert_eq!(scene.pick(outside, viewport, |_| true).unwrap().item, 1);
 
         scene.camera.orbit(Vec2::new(0.2, 0.1));
         scene.camera.pan(Vec2::new(0.1, -0.2));
         scene.camera.zoom(-250.0);
         scene.camera.focus(Vec3::new(3.0, 2.0, 1.0));
-        let hit = scene.pick(inside, viewport).unwrap();
+        let hit = scene.pick(inside, viewport, |_| true).unwrap();
         assert_eq!(hit.item, 0);
         assert!(
             hit.point
                 .abs_diff_eq(Vec3::new(120.0, -126.0, 0.0), TOLERANCE)
         );
-        assert!(scene.pick(inside, Vec2::ZERO).is_none());
-        assert!(scene.pick(Vec2::NAN, viewport).is_none());
+        assert!(scene.pick(inside, Vec2::ZERO, |_| true).is_none());
+        assert!(scene.pick(Vec2::NAN, viewport, |_| true).is_none());
     }
 
     const TOLERANCE: f32 = 0.0001;

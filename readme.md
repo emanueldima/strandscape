@@ -31,6 +31,7 @@ Information from multiple sources can be explored together, with its origins pre
 | `text` | Shape text and rasterize glyphs. |
 | `render` | Convert scenes into drawing data. |
 | `render::gpu` | Manage wgpu resources and frame submission. |
+| `render::sphere` | Build billboard quads and render shaded sphere surfaces with depth. |
 | `render::text` | Maintain the glyph atlas and draw text. |
 | `web` | Expose the application through Wasm. |
 | `web/app.js` | Download fonts, handle input, and schedule redraws. |
@@ -57,8 +58,11 @@ web/app.js
 The current experiment uses one schematic map with a chronological polyline above
 it. The initial view looks straight down, with north at the top.
 Longitude and latitude determine horizontal position; elapsed time determines
-height across a shallow 0.9-unit span. Place names sit on the map; event points have
-no labels. A bottom HUD timeline includes every event, with time-proportional gaps
+height across a shallow 0.9-unit span. Place names sit on the map; 3D events use
+shaded sphere impostors with surface depth and ray–sphere picking, without labels.
+Only events, place markers, and place labels respond to 3D clicks; other clicks
+leave the view unchanged.
+A bottom HUD timeline uses flat dots for every event, with time-proportional gaps
 clamped to a 24 CSS-pixel minimum. Its 12-pixel labels rise at 45°, showing the date
 and a shortened description. Scroll over its bottom strip to move an overflowing
 timeline and its labels horizontally;

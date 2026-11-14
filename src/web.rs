@@ -91,17 +91,19 @@ impl WebApp {
     }
 
     pub fn focus(&mut self, x: f32, y: f32) -> Result<Option<String>, JsError> {
-        let on_timeline = (1.0 - y) * self.viewport.y * 0.5 >= self.output.timeline.top;
-        let Some(hit) = self.output.scene.pick(Vec2::new(x, y), self.viewport) else {
-            if !on_timeline {
-                self.output.scene.camera.focus(Vec3::ZERO);
-            }
+        let Some(hit) = self
+            .output
+            .scene
+            .pick(Vec2::new(x, y), self.viewport, |index| {
+                self.output.bindings.contains_key(&index)
+            })
+        else {
             return Ok(None);
         };
         let point = match self.output.bindings.get(&hit.item) {
             Some(Subject::Entry(_, point)) => *point,
-            None if on_timeline => None,
-            _ => Some(hit.point),
+            Some(Subject::Place(_, point)) => Some(*point),
+            None => return Ok(None),
         };
         if let Some(point) = point {
             self.output.scene.camera.focus(point);
@@ -118,7 +120,7 @@ impl WebApp {
                 self.rebuild(self.output.timeline.offset)?;
                 Ok(title)
             }
-            Some(Subject::Place(id)) => Ok(self
+            Some(Subject::Place(id, _)) => Ok(self
                 .dataset
                 .events
                 .iter()

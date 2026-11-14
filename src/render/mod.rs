@@ -1,5 +1,7 @@
 mod gpu;
+mod sphere;
 mod text;
+mod tube;
 
 use {
     crate::{
@@ -78,6 +80,18 @@ impl Renderer {
             / self.viewport.scale_factor as f32;
         let mut list = DrawList {
             planes: Vec::new(),
+            spheres: Vec::new(),
+            tubes: Vec::new(),
+            world_view: WorldView {
+                clip_from_world: clip_from_world.to_cols_array_2d(),
+                eye: scene
+                    .camera
+                    .ray(Vec2::ZERO, viewport.x / viewport.y)
+                    .ok_or(RenderError::InvalidView)?
+                    .origin
+                    .extend(1.0)
+                    .to_array(),
+            },
             text: TextBatch {
                 runs: Vec::new(),
                 images: HashMap::new(),
@@ -122,6 +136,12 @@ impl Renderer {
                         }
                     }
                 }
+                Item::Sphere(sphere) => {
+                    list.spheres.extend(sphere::build(sphere, clip_from_world));
+                }
+                Item::Tube(tube) => {
+                    list.tubes.extend(tube::build(tube, clip_from_world));
+                }
                 Item::Text(text) => {
                     let layout = self.fonts.layout(&text.spec)?;
                     // Cache the rendered layout so picking uses the same pane bounds.
@@ -159,7 +179,17 @@ impl Renderer {
 
 struct DrawList {
     planes: Vec<PlaneVertex>,
+    spheres: Vec<sphere::Vertex>,
+    tubes: Vec<tube::Vertex>,
+    world_view: WorldView,
     text: TextBatch,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct WorldView {
+    clip_from_world: [[f32; 4]; 4],
+    eye: [f32; 4],
 }
 
 struct TextBatch {
@@ -242,7 +272,12 @@ mod tests {
 
     #[test]
     fn validates_shaders() {
-        for source in [include_str!("plane.wgsl"), include_str!("text.wgsl")] {
+        for source in [
+            include_str!("plane.wgsl"),
+            include_str!("text.wgsl"),
+            include_str!("sphere.wgsl"),
+            include_str!("tube.wgsl"),
+        ] {
             let module = naga::front::wgsl::parse_str(source).unwrap();
             naga::valid::Validator::new(
                 naga::valid::ValidationFlags::all(),

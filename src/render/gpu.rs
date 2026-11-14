@@ -1,5 +1,8 @@
 use {
-    super::{DrawList, PlaneVertex, RenderConfig, RenderError, Viewport, text::TextRenderer},
+    super::{
+        DrawList, PlaneVertex, RenderConfig, RenderError, Viewport, sphere::SphereRenderer,
+        text::TextRenderer, tube::TubeRenderer,
+    },
     wgpu::util::DeviceExt,
 };
 
@@ -12,6 +15,8 @@ pub(super) struct Gpu {
     viewport: Viewport,
     depth: wgpu::TextureView,
     plane_pipeline: wgpu::RenderPipeline,
+    spheres: SphereRenderer,
+    tubes: TubeRenderer,
     text: TextRenderer,
     clear_color: wgpu::Color,
 }
@@ -97,6 +102,8 @@ impl Gpu {
             cache: None,
         });
         let text = TextRenderer::new(&device, &queue, color_format, DEPTH_FORMAT);
+        let spheres = SphereRenderer::new(&device, color_format, DEPTH_FORMAT);
+        let tubes = TubeRenderer::new(&device, color_format, DEPTH_FORMAT);
         let [r, g, b, a] = config.clear_color;
         Ok(Self {
             surface,
@@ -107,6 +114,8 @@ impl Gpu {
             viewport,
             depth,
             plane_pipeline,
+            spheres,
+            tubes,
             text,
             clear_color: wgpu::Color { r, g, b, a },
         })
@@ -132,6 +141,10 @@ impl Gpu {
             error => return Err(RenderError::Surface(format!("{error:?}"))),
         };
         self.text.prepare(&self.device, &self.queue, &list.text)?;
+        self.spheres
+            .prepare(&self.device, &self.queue, &list.spheres, &list.world_view);
+        self.tubes
+            .prepare(&self.device, &self.queue, &list.tubes, &list.world_view);
         let plane_vertices = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -171,6 +184,8 @@ impl Gpu {
                 pass.set_vertex_buffer(0, plane_vertices.slice(..));
                 pass.draw(0..list.planes.len() as u32, 0..1);
             }
+            self.tubes.draw(&mut pass);
+            self.spheres.draw(&mut pass);
             self.text.draw(&mut pass);
         }
         self.queue.submit([encoder.finish()]);

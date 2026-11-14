@@ -157,12 +157,12 @@ mod tests {
             output
                 .bindings
                 .values()
-                .filter(|target| matches!(target, Target::Place(_)))
+                .filter(|target| matches!(target, Target::Place(_, _)))
                 .count(),
-            9
+            18
         );
         for (index, target) in &output.bindings {
-            let Target::Place(id) = target else {
+            let Target::Place(id, point) = target else {
                 continue;
             };
             let place = data
@@ -171,11 +171,20 @@ mod tests {
                 .filter_map(|event| event.place.as_ref())
                 .find(|place| &place.id == id)
                 .unwrap();
-            let crate::scene::Item::Text(text) = &output.scene.items[index + 1] else {
+            let label_index = if matches!(&output.scene.items[*index], Item::Text(_)) {
+                *index
+            } else {
+                index + 1
+            };
+            assert!(
+                matches!(&output.bindings[&label_index], Target::Place(label_id, label_point)
+                if label_id == id && label_point == point)
+            );
+            let crate::scene::Item::Text(text) = &output.scene.items[label_index] else {
                 panic!("expected place label");
             };
             assert_eq!(text.spec.content, place.name);
-            assert_eq!(text.background, None);
+            assert_eq!(text.background, Some([0.0; 4]));
             assert!(text.transform.translation.y > 0.0 && text.transform.translation.y < 0.1);
             assert!((text.transform.rotation * glam::Vec3::Z).abs_diff_eq(glam::Vec3::Y, 0.001));
             assert_eq!(
@@ -187,6 +196,67 @@ mod tests {
                 crate::scene::Item::Text(label) if label.spec.content == place.name))
                     .count(),
                 1
+            );
+        }
+    }
+
+    #[test]
+    fn place_labels_pick_their_place() {
+        let mut data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
+        data.events
+            .retain(|event| event.place.as_ref().is_some_and(|place| place.id == "ulm"));
+        let viewport = Vec2::new(1280.0, 800.0);
+        let mut output = build(
+            &data,
+            &Config {
+                selected: None,
+                font: FontId(0),
+                viewport,
+                timeline_offset: 0.0,
+            },
+        )
+        .unwrap();
+        let (index, label) = output
+            .scene
+            .items
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, item)| match item {
+                Item::Text(text) if text.transform.space == Space::World => Some((index, text)),
+                _ => None,
+            })
+            .unwrap();
+        label.layout = Some(crate::text::TextLayout {
+            glyphs: Vec::new().into(),
+            bounds: [100.0, 27.0],
+        });
+        let transform = label.transform;
+        let Target::Place(_, place) = output.bindings[&index] else {
+            unreachable!()
+        };
+
+        for orbit in [Vec2::ZERO, Vec2::new(0.2, 0.25)] {
+            output.scene.camera.orbit(orbit);
+            let clip = transform.clip_from_local(
+                output
+                    .scene
+                    .camera
+                    .clip_from_world(viewport.x / viewport.y)
+                    .unwrap(),
+                viewport,
+            );
+            let point = clip
+                .project_point3(glam::Vec3::new(50.0, -13.5, 0.0))
+                .truncate();
+            let hit = output
+                .scene
+                .pick(point, viewport, |index| {
+                    output.bindings.contains_key(&index)
+                })
+                .unwrap();
+            assert_eq!(hit.item, index);
+            assert!(
+                matches!(&output.bindings[&hit.item], Target::Place(id, center) if id == "ulm" && *center == place)
             );
         }
     }
@@ -244,7 +314,7 @@ mod tests {
                 assert_eq!(
                     output
                         .scene
-                        .pick(ndc, Vec2::new(320.0, 500.0))
+                        .pick(ndc, Vec2::new(320.0, 500.0), |_| true)
                         .unwrap()
                         .item,
                     index
@@ -299,28 +369,37 @@ mod tests {
                 let Target::Entry(id, point) = target else {
                     continue;
                 };
-                let Item::Dot(dot) = &output.scene.items[*index] else {
-                    continue;
+                let (space, position, radius, color) = match &output.scene.items[*index] {
+                    Item::Dot(dot) => (
+                        dot.transform.space,
+                        dot.transform.translation,
+                        dot.radius,
+                        dot.color,
+                    ),
+                    Item::Sphere(sphere) => {
+                        (Space::World, sphere.center, sphere.radius, sphere.color)
+                    }
+                    _ => continue,
                 };
                 let event = data.events.iter().find(|event| &event.id == id).unwrap();
-                if dot.transform.space == Space::World {
+                if space == Space::World {
                     world_count += 1;
                     assert!(event.place.is_some());
-                    assert_eq!(Some(dot.transform.translation), *point);
+                    assert_eq!(Some(position), *point);
                     assert_eq!(
-                        dot.radius,
+                        radius,
                         if selected == Some(id.as_str()) {
-                            0.12
+                            0.06
                         } else {
-                            0.08
+                            0.04
                         }
                     );
                 } else {
                     hud_count += 1;
-                    assert_eq!(dot.transform.translation.y, -476.0);
+                    assert_eq!(position.y, -476.0);
                     assert_eq!(point.is_some(), event.place.is_some());
                     assert_eq!(
-                        dot.radius,
+                        radius,
                         if selected == Some(id.as_str()) {
                             6.0
                         } else {
@@ -328,16 +407,16 @@ mod tests {
                         }
                     );
                     let ndc = Vec2::new(
-                        dot.transform.translation.x / viewport.x * 2.0 - 1.0,
-                        dot.transform.translation.y / viewport.y * 2.0 + 1.0,
+                        position.x / viewport.x * 2.0 - 1.0,
+                        position.y / viewport.y * 2.0 + 1.0,
                     );
-                    let hit = output.scene.pick(ndc, viewport).unwrap();
+                    let hit = output.scene.pick(ndc, viewport, |_| true).unwrap();
                     assert!(
                         matches!(&output.bindings[&hit.item], Target::Entry(hit_id, _) if hit_id == id)
                     );
                 }
                 if selected == Some(id.as_str()) {
-                    selected_dots.push(dot.color);
+                    selected_dots.push(color);
                 }
             }
             assert_eq!(hud_count, data.events.len());
@@ -431,7 +510,7 @@ mod tests {
                     dot.transform.translation.x / viewport.x * 2.0 - 1.0,
                     dot.transform.translation.y / viewport.y * 2.0 + 1.0,
                 );
-                let hit = output.scene.pick(ndc, viewport).unwrap();
+                let hit = output.scene.pick(ndc, viewport, |_| true).unwrap();
                 assert!(
                     matches!(&output.bindings[&hit.item], Target::Entry(hit_id, _) if hit_id == id)
                 );
@@ -524,7 +603,7 @@ mod tests {
             }
             assert_eq!(seen.len(), data.events.len());
             let empty = Vec2::new(0.0, 1.0 - (viewport.y - 8.0) / viewport.y * 2.0);
-            let hit = first.scene.pick(empty, viewport).unwrap();
+            let hit = first.scene.pick(empty, viewport, |_| true).unwrap();
             assert!(!first.bindings.contains_key(&hit.item));
             assert!(matches!(&first.scene.items[hit.item], Item::Plane(plane)
                 if plane.transform.space == Space::Hud));

@@ -1,10 +1,10 @@
 use {
     crate::{
         camera::{Camera, CameraConfig},
-        scene::{Dot, Item, Plane, Scene, SceneConfig, Space, Text, Transform},
+        scene::{Dot, Item, Plane, Scene, SceneConfig, Space, Sphere, Text, Transform, Tube},
         text::{FontId, TextSpec},
     },
-    glam::{Mat3, Mat4, Quat, Vec2, Vec3},
+    glam::{Mat3, Quat, Vec2, Vec3},
     std::collections::HashMap,
     thiserror::Error,
 };
@@ -23,7 +23,7 @@ pub(crate) struct Timeline {
 
 pub(crate) enum Target {
     Entry(String, Option<Vec3>),
-    Place(String),
+    Place(String, Vec3),
 }
 
 pub(crate) struct Composition {
@@ -94,10 +94,6 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
     let distance = VIEW_HALF_HEIGHT.max(VIEW_HALF_WIDTH * config.viewport.y / config.viewport.x)
         / (fov * 0.5).tan();
     let position = focus + Vec3::Y * distance;
-    let view = Mat4::look_at_rh(position, focus, -Vec3::Z);
-    let world_from_view = view.inverse();
-    let facing = Quat::from_mat4(&world_from_view);
-    let normal = facing * Vec3::Z;
     let camera = Camera::new(CameraConfig {
         position,
         focus,
@@ -162,7 +158,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             } else {
                 MUTED
             };
-            bindings.insert(items.len(), Target::Place(marker.id.clone()));
+            bindings.insert(items.len(), Target::Place(marker.id.clone(), point));
             plane(
                 &mut items,
                 point,
@@ -171,6 +167,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
                 color,
             );
             // Name each place on the map rather than repeating it on event labels.
+            bindings.insert(items.len(), Target::Place(marker.id.clone(), point));
             text(
                 &mut items,
                 &marker.label,
@@ -188,7 +185,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
                 } else {
                     [color[0], color[1], color[2], LABEL_OPACITY]
                 },
-                None,
+                Some([0.0; 4]),
             );
         }
         projection
@@ -215,21 +212,15 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             continue;
         };
         let point = ground + Vec3::Y * height;
-        line(&mut items, ground, point, GRID, normal);
+        tube(&mut items, ground, point, GRID);
         if let Some(previous) = previous {
-            line(&mut items, previous, point, ACCENT, normal);
+            tube(&mut items, previous, point, ACCENT);
         }
         previous = Some(point);
         bindings.insert(items.len(), Target::Entry(entry.id.clone(), Some(point)));
-        items.push(Item::Dot(Dot {
-            transform: Transform {
-                space: Space::World,
-                translation: point,
-                rotation: facing,
-                scale: Vec3::ONE,
-            },
-            radius: MARKER_SIZE
-                * 0.5
+        items.push(Item::Sphere(Sphere {
+            center: point,
+            radius: EVENT_RADIUS
                 * if entry.emphasis == Emphasis::Selected {
                     SELECTED_SCALE
                 } else {
@@ -429,6 +420,7 @@ const HEIGHT_BASE: f32 = 0.7;
 const HEIGHT_SPAN: f32 = 0.9;
 const SURFACE_OFFSET: f32 = 0.015;
 const MARKER_SIZE: f32 = 0.16;
+const EVENT_RADIUS: f32 = 0.04;
 const SELECTED_SCALE: f32 = 1.5;
 const LINE_WIDTH: f32 = 0.025;
 const TEXT_SCALE: f32 = 0.009;
@@ -513,6 +505,20 @@ fn line(items: &mut Vec<Item>, start: Vec3, end: Vec3, color: [f32; 4], normal: 
         Quat::from_mat3(&Mat3::from_cols(x, y, x.cross(y))),
         color,
     );
+}
+
+fn tube(items: &mut Vec<Item>, start: Vec3, end: Vec3, color: [f32; 4]) {
+    if start.distance_squared(end) <= f32::EPSILON * f32::EPSILON {
+        return;
+    }
+
+    // Use the line's half-width as radius to retain its diameter when shading it.
+    items.push(Item::Tube(Tube {
+        start,
+        end,
+        radius: LINE_WIDTH * 0.5,
+        color,
+    }));
 }
 
 fn text(
@@ -628,11 +634,11 @@ mod tests {
                     })
                     .min()
                     .unwrap();
-                let Item::Dot(dot) = &output.scene.items[index] else {
+                let Item::Sphere(sphere) = &output.scene.items[index] else {
                     panic!("expected event marker")
                 };
-                assert!(dot.transform.matrix().is_finite());
-                dot.transform.translation
+                assert!(sphere.center.is_finite());
+                sphere.center
             })
             .collect();
         assert_eq!(points[0].x, points[2].x);
@@ -644,24 +650,32 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Plane(plane) if plane.color == ACCENT => Some(plane),
+                Item::Tube(tube) if tube.color == ACCENT => Some(tube),
                 _ => None,
             })
             .collect();
         assert_eq!(segments.len(), points.len() - 1);
         for (segment, pair) in segments.iter().zip(points.windows(2)) {
-            let transform = segment.transform.matrix();
-            assert!(transform.is_finite());
-            assert!(
-                transform
-                    .transform_point3(Vec3::X * -segment.size.x * 0.5)
-                    .abs_diff_eq(pair[0], 0.001)
-            );
-            assert!(
-                transform
-                    .transform_point3(Vec3::X * segment.size.x * 0.5)
-                    .abs_diff_eq(pair[1], 0.001)
-            );
+            assert!(segment.start.abs_diff_eq(pair[0], 0.001));
+            assert!(segment.end.abs_diff_eq(pair[1], 0.001));
+            assert_eq!(segment.radius, LINE_WIDTH * 0.5);
+        }
+
+        let stems: Vec<_> = output
+            .scene
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let Item::Tube(tube) = item else { return None };
+                assert!(!output.bindings.contains_key(&index));
+                (tube.color == GRID).then_some(tube)
+            })
+            .collect();
+        assert_eq!(stems.len(), points.len());
+        for (stem, point) in stems.iter().zip(&points) {
+            assert_eq!(stem.start, Vec3::new(point.x, 0.0, point.z));
+            assert_eq!(stem.end, *point);
         }
 
         composition.strand[1].place = None;
@@ -679,23 +693,14 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Plane(plane) if plane.color == ACCENT => Some(plane),
+                Item::Tube(tube) if tube.color == ACCENT => Some(tube),
                 _ => None,
             })
             .collect();
         assert_eq!(segments.len(), 1);
         let segment = segments[0];
-        let transform = segment.transform.matrix();
-        assert!(
-            transform
-                .transform_point3(Vec3::X * -segment.size.x * 0.5)
-                .abs_diff_eq(points[0], 0.001)
-        );
-        assert!(
-            transform
-                .transform_point3(Vec3::X * segment.size.x * 0.5)
-                .abs_diff_eq(points[2], 0.001)
-        );
+        assert!(segment.start.abs_diff_eq(points[0], 0.001));
+        assert!(segment.end.abs_diff_eq(points[2], 0.001));
     }
 
     #[test]
