@@ -42,7 +42,6 @@ pub(crate) struct Entry {
 }
 
 pub(crate) struct Map {
-    pub(crate) reference: String,
     pub(crate) bounds: Bounds,
     pub(crate) markers: Vec<Marker>,
 }
@@ -120,30 +119,6 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         INK,
         None,
     );
-    let subtitle = composition.map.as_ref().map_or_else(
-        || "Height = time · place unknown".into(),
-        |map| {
-            format!(
-                "Reference: {} · schematic geography · height = time",
-                map.reference
-            )
-        },
-    );
-    text(
-        &mut items,
-        &subtitle,
-        Transform {
-            space: Space::Hud,
-            translation: Vec3::new(HUD_MARGIN, -HUD_MARGIN - HUD_LINE_HEIGHT, 0.0),
-            rotation: Quat::IDENTITY,
-            scale: Vec3::ONE,
-        },
-        None,
-        config.font,
-        MUTED,
-        None,
-    );
-
     let floor_rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     let projection = composition.map.as_ref().map(|map| {
         let mid_lat = (map.bounds.south + map.bounds.north) * 0.5;
@@ -236,8 +211,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             INK
         };
         let Some(ground) = ground else {
-            // Unknown locations break the 3D strand but remain on the HUD timeline.
-            previous = None;
+            // Keep unknown events on the HUD while joining the surrounding located dots.
             continue;
         };
         let point = ground + Vec3::Y * height;
@@ -265,7 +239,8 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         }));
     }
 
-    let width = (config.viewport.x - HUD_MARGIN * 2.0).max(0.0);
+    // Reserve space beyond the last dot for its angled label.
+    let width = (config.viewport.x - HUD_MARGIN * 2.0 - HUD_LABEL_ROOM).max(0.0);
     let positions = timeline_positions(&composition.strand, width);
     let max_offset = (positions.last().copied().unwrap_or(0.0) - width).max(0.0);
     let offset = config.timeline_offset.clamp(0.0, max_offset);
@@ -345,6 +320,36 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             size: Vec2::splat(HUD_MIN_GAP),
             color: [0.0; 4],
         }));
+        let label = format!("{} · {}", entry.date, entry.label);
+        let mut chars = label.chars();
+        let mut content: String = chars.by_ref().take(HUD_LABEL_LIMIT).collect();
+        if chars.next().is_some() {
+            content.pop();
+            content.push('…');
+        }
+        bindings.insert(items.len(), Target::Entry(entry.id.clone(), point));
+        items.push(Item::Text(Text {
+            transform: Transform {
+                space: Space::Hud,
+                translation: position + Vec3::Y * HUD_MIN_GAP,
+                rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+                scale: Vec3::ONE,
+            },
+            spec: TextSpec {
+                content,
+                font: config.font,
+                size: HUD_LABEL_SIZE,
+                max_width: None,
+            },
+            // Keep the selected label visible and match its highlighted dot.
+            color: if entry.emphasis == Emphasis::Selected {
+                ACCENT
+            } else {
+                MUTED
+            },
+            background: Some([0.0; 4]),
+            layout: None,
+        }));
     }
     if let Some(entry) = composition
         .strand
@@ -366,7 +371,11 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             &label,
             Transform {
                 space: Space::Hud,
-                translation: Vec3::new(HUD_MARGIN, baseline + HUD_LINE_HEIGHT * 2.0, 0.0),
+                translation: Vec3::new(
+                    HUD_MARGIN,
+                    baseline + HUD_TIMELINE_HEIGHT - HUD_LINE_HEIGHT,
+                    0.0,
+                ),
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
@@ -417,7 +426,7 @@ const MIN_COS_LAT: f64 = 0.01;
 const MIN_GEO_SPAN: f64 = 0.001;
 const MIN_TIME_SPAN: f64 = 1.0;
 const HEIGHT_BASE: f32 = 0.7;
-const HEIGHT_SPAN: f32 = 9.0;
+const HEIGHT_SPAN: f32 = 0.9;
 const SURFACE_OFFSET: f32 = 0.015;
 const MARKER_SIZE: f32 = 0.16;
 const SELECTED_SCALE: f32 = 1.5;
@@ -431,7 +440,10 @@ const HUD_MARGIN: f32 = 24.0;
 const HUD_LINE_HEIGHT: f32 = 28.0;
 const HUD_DOT_RADIUS: f32 = 4.0;
 const HUD_MIN_GAP: f32 = 24.0;
-const HUD_TIMELINE_HEIGHT: f32 = 112.0;
+const HUD_TIMELINE_HEIGHT: f32 = 224.0;
+const HUD_LABEL_SIZE: f32 = 12.0;
+const HUD_LABEL_LIMIT: usize = 28;
+const HUD_LABEL_ROOM: f32 = 160.0;
 const LAYOUT_STEPS: usize = 32;
 
 fn timeline_positions(entries: &[Entry], width: f32) -> Vec<f32> {
@@ -489,9 +501,10 @@ fn line(items: &mut Vec<Item>, start: Vec3, end: Vec3, color: [f32; 4], normal: 
         return;
     }
     let x = delta / length;
-    let y = normal.cross(x).normalize_or_zero();
+    let mut y = normal.cross(x).normalize_or_zero();
     if y == Vec3::ZERO {
-        return;
+        // Retain vertical segments even when they point along the viewing axis.
+        y = x.any_orthonormal_vector();
     }
     plane(
         items,
@@ -521,6 +534,7 @@ fn text(
         },
         color,
         background,
+        layout: None,
     }));
 }
 
@@ -583,7 +597,6 @@ mod tests {
                 })
                 .collect(),
             map: Some(Map {
-                reference: "1900".into(),
                 bounds: Bounds {
                     west: 6.0,
                     east: 9.0,
@@ -626,6 +639,30 @@ mod tests {
         assert_eq!(points[0].z, points[2].z);
         assert!(points[0].y > 0.0 && points[1].y > points[0].y);
         assert!(((points[2].y - points[1].y) / (points[1].y - points[0].y) - 4.0).abs() < 0.001);
+        let segments: Vec<_> = output
+            .scene
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Plane(plane) if plane.color == ACCENT => Some(plane),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(segments.len(), points.len() - 1);
+        for (segment, pair) in segments.iter().zip(points.windows(2)) {
+            let transform = segment.transform.matrix();
+            assert!(transform.is_finite());
+            assert!(
+                transform
+                    .transform_point3(Vec3::X * -segment.size.x * 0.5)
+                    .abs_diff_eq(pair[0], 0.001)
+            );
+            assert!(
+                transform
+                    .transform_point3(Vec3::X * segment.size.x * 0.5)
+                    .abs_diff_eq(pair[1], 0.001)
+            );
+        }
 
         composition.strand[1].place = None;
         let output = build(
@@ -637,8 +674,28 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(!output.scene.items.iter().any(|item| matches!(item,
-            Item::Plane(plane) if plane.color == ACCENT)));
+        let segments: Vec<_> = output
+            .scene
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Plane(plane) if plane.color == ACCENT => Some(plane),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(segments.len(), 1);
+        let segment = segments[0];
+        let transform = segment.transform.matrix();
+        assert!(
+            transform
+                .transform_point3(Vec3::X * -segment.size.x * 0.5)
+                .abs_diff_eq(points[0], 0.001)
+        );
+        assert!(
+            transform
+                .transform_point3(Vec3::X * segment.size.x * 0.5)
+                .abs_diff_eq(points[2], 0.001)
+        );
     }
 
     #[test]
@@ -671,7 +728,11 @@ mod tests {
                 continue;
             };
             assert_eq!(text.transform.space, Space::Hud);
-            assert_eq!(text.transform.rotation, Quat::IDENTITY);
+            assert!(
+                text.transform.rotation == Quat::IDENTITY
+                    || text.transform.rotation
+                        == Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)
+            );
             assert_eq!(text.transform.scale, Vec3::ONE);
         }
         assert!(

@@ -203,7 +203,6 @@ impl TextRenderer {
 
 const ATLAS_SIZE: u32 = 1024;
 const PADDING: u32 = 1;
-const PANE_PADDING: f32 = 4.0;
 const SOLID_UV: [f32; 2] = [0.5 / ATLAS_SIZE as f32; 2];
 const QUAD: [[f32; 2]; 6] = [
     [0.0, 0.0],
@@ -229,13 +228,14 @@ struct Vertex {
 fn vertices(batch: &TextBatch, entries: &HashMap<GlyphKey, AtlasEntry>) -> Vec<Vertex> {
     let mut vertices = Vec::new();
     for run in &batch.runs {
-        if let Some(color) = run.background {
+        if let Some(color) = run.background.filter(|color| color[3] > 0.0) {
             // Match the shaped text bounds, then draw its glyphs over the pane.
+            let [min, max] = run.layout.pane_bounds();
             for [u, v] in QUAD {
-                let x = u * (run.layout.bounds[0] + PANE_PADDING * 2.0) - PANE_PADDING;
-                let y = v * (run.layout.bounds[1] + PANE_PADDING * 2.0) - PANE_PADDING;
+                let x = min[0] + u * (max[0] - min[0]);
+                let y = max[1] - v * (max[1] - min[1]);
                 vertices.push(Vertex {
-                    position: (run.clip_from_local * Vec4::new(x, -y, 0.0, 1.0)).to_array(),
+                    position: (run.clip_from_local * Vec4::new(x, y, 0.0, 1.0)).to_array(),
                     uv: SOLID_UV,
                     color,
                 });
@@ -281,7 +281,12 @@ mod tests {
                     * Mat4::from_scale(Vec3::splat(0.009)),
             ),
         ] {
-            for background in [None, Some([0.0, 0.0, 0.0, 0.5]), Some([0.0, 0.0, 0.0, 1.0])] {
+            for background in [
+                None,
+                Some([0.0; 4]),
+                Some([0.0, 0.0, 0.0, 0.5]),
+                Some([0.0, 0.0, 0.0, 1.0]),
+            ] {
                 let batch = TextBatch {
                     runs: vec![TextDraw {
                         layout: TextLayout {
@@ -296,7 +301,7 @@ mod tests {
                     images: HashMap::new(),
                 };
                 let pane = vertices(&batch, &HashMap::new());
-                let Some(color) = background else {
+                let Some(color) = background.filter(|color| color[3] > 0.0) else {
                     assert!(pane.is_empty());
                     continue;
                 };

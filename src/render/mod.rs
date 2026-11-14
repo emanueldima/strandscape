@@ -65,7 +65,7 @@ impl Renderer {
         })
     }
 
-    pub(crate) fn draw(&mut self, scene: &Scene) -> Result<(), RenderError> {
+    pub(crate) fn draw(&mut self, scene: &mut Scene) -> Result<(), RenderError> {
         if self.viewport.width == 0 || self.viewport.height == 0 {
             return Ok(());
         }
@@ -85,7 +85,7 @@ impl Renderer {
         };
 
         // Flatten domain objects into drawing data; only the backend sees wgpu.
-        for item in &scene.items {
+        for item in &mut scene.items {
             match item {
                 Item::Plane(plane) => {
                     // Invisible hit areas must not draw or occlude scene geometry.
@@ -124,6 +124,8 @@ impl Renderer {
                 }
                 Item::Text(text) => {
                     let layout = self.fonts.layout(&text.spec)?;
+                    // Cache the rendered layout so picking uses the same pane bounds.
+                    text.layout = Some(layout.clone());
                     if layout.bounds[0] == 0.0 || layout.bounds[1] == 0.0 {
                         continue;
                     }

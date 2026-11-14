@@ -67,7 +67,12 @@ async function run() {
       dragged = true;
       const rect = canvas.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
-        app.orbit(-x / rect.width, -y / rect.height);
+        if (event.ctrlKey || event.metaKey) {
+          app.orbit(-x / rect.width, -y / rect.height);
+        } else {
+          // Move the map with the pointer by translating the camera oppositely.
+          app.pan(-x / rect.height, -y / rect.height);
+        }
         requestDraw();
       }
       pointer.x = event.clientX;
@@ -83,10 +88,9 @@ async function run() {
       const rect = canvas.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
-        const label = app.focus((event.clientX - rect.left) / rect.width * 2 - 1,
+        app.focus((event.clientX - rect.left) / rect.width * 2 - 1,
           1 - (event.clientY - rect.top) / rect.height * 2);
-        status.textContent = label ?? '';
-        status.hidden = !label;
+        status.hidden = true;
         requestDraw();
       } catch (error) {
         report(error);
@@ -94,21 +98,19 @@ async function run() {
     });
     canvas.addEventListener('wheel', (event) => {
       event.preventDefault();
-      // Normalize scrolling to CSS pixels; Ctrl also covers trackpad pinch zoom.
+      // Normalize scrolling to CSS pixels, including trackpad pinch zoom.
       const lineHeight = 16;
       const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? lineHeight
         : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? canvas.clientHeight : 1;
       const rect = canvas.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       try {
-        if (event.ctrlKey || event.metaKey) {
-          app.zoom(event.deltaY * unit);
-        } else if (!app.scroll_timeline(
+        if (event.ctrlKey || event.metaKey || !app.scroll_timeline(
           (event.clientX - rect.left) / rect.width * 2 - 1,
           1 - (event.clientY - rect.top) / rect.height * 2,
           (Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY) * unit,
         )) {
-          app.pan(event.deltaX * unit / rect.height, event.deltaY * unit / rect.height);
+          app.zoom(event.deltaY * unit);
         }
         requestDraw();
       } catch (error) {

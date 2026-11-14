@@ -39,7 +39,6 @@ impl WebApp {
             &dataset,
             &composer::Config {
                 selected: None,
-                reference: &dataset.events[0].date,
                 font: FONT,
                 viewport,
                 timeline_offset: 0.0,
@@ -68,7 +67,7 @@ impl WebApp {
     }
 
     pub fn draw(&mut self) -> Result<(), JsError> {
-        self.renderer.draw(&self.output.scene)?;
+        self.renderer.draw(&mut self.output.scene)?;
         Ok(())
     }
 
@@ -157,7 +156,6 @@ impl WebApp {
             &self.dataset,
             &composer::Config {
                 selected: self.selected.as_deref(),
-                reference: &self.dataset.events[0].date,
                 font: FONT,
                 viewport: self.viewport,
                 timeline_offset,

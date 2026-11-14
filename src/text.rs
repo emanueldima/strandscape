@@ -186,7 +186,18 @@ impl FontSystem {
     }
 }
 
+impl TextLayout {
+    pub(crate) fn pane_bounds(&self) -> [[f32; 2]; 2] {
+        // Rendering and picking share padded bounds in local, Y-up coordinates.
+        [
+            [-PANE_PADDING, -self.bounds[1] - PANE_PADDING],
+            [self.bounds[0] + PANE_PADDING, PANE_PADDING],
+        ]
+    }
+}
+
 const LINE_HEIGHT: f32 = 1.35;
+const PANE_PADDING: f32 = 4.0;
 
 #[derive(PartialEq, Eq, Hash)]
 struct LayoutKey {

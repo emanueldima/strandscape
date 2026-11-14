@@ -1,7 +1,7 @@
 use {
     crate::{
         camera::{Camera, Ray},
-        text::TextSpec,
+        text::{TextLayout, TextSpec},
     },
     glam::{Mat4, Quat, Vec2, Vec3},
 };
@@ -58,6 +58,7 @@ pub(crate) struct Text {
     pub(crate) spec: TextSpec,
     pub(crate) color: [f32; 4],
     pub(crate) background: Option<[f32; 4]>,
+    pub(crate) layout: Option<TextLayout>,
 }
 
 impl Scene {
@@ -116,10 +117,22 @@ impl Scene {
 
 impl Item {
     fn hit(&self, ray: &Ray, space: Space) -> Option<f32> {
-        let (transform, bounds) = match self {
-            Self::Plane(plane) => (plane.transform, plane.size * 0.5),
-            Self::Dot(dot) => (dot.transform, Vec2::splat(dot.radius)),
-            Self::Text(_) => return None,
+        let (transform, min, max) = match self {
+            Self::Plane(plane) => (plane.transform, -plane.size * 0.5, plane.size * 0.5),
+            Self::Dot(dot) => (
+                dot.transform,
+                Vec2::splat(-dot.radius),
+                Vec2::splat(dot.radius),
+            ),
+            Self::Text(text) => {
+                text.background?;
+                let layout = text.layout.as_ref()?;
+                if layout.bounds.contains(&0.0) {
+                    return None;
+                }
+                let [min, max] = layout.pane_bounds().map(Vec2::from_array);
+                (text.transform, min, max)
+            }
         };
         if transform.space != space {
             return None;
@@ -141,7 +154,7 @@ impl Item {
         let point = (origin + direction * distance).truncate();
         let inside = match self {
             Self::Dot(dot) => point.length_squared() <= dot.radius * dot.radius,
-            _ => point.abs().cmple(bounds).all(),
+            _ => point.cmpge(min).all() && point.cmple(max).all(),
         };
         inside.then_some(distance)
     }
@@ -168,7 +181,10 @@ impl Transform {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::camera::CameraConfig};
+    use {
+        super::*,
+        crate::{camera::CameraConfig, text::FontId},
+    };
 
     #[test]
     fn picks_nearest_plane() {
@@ -254,6 +270,75 @@ mod tests {
             let corner = clip.project_point3(Vec3::new(0.8, 0.8, 0.0)).truncate();
             assert_eq!(scene.pick(inside, viewport).unwrap().item, 0);
             assert!(scene.pick(corner, viewport).is_none());
+        }
+    }
+
+    #[test]
+    fn picks_text_pane_bounds() {
+        let viewport = Vec2::new(800.0, 600.0);
+        for space in [Space::World, Space::Hud] {
+            for background in [None, Some([0.0; 4]), Some([1.0; 4])] {
+                let transform = Transform {
+                    space,
+                    translation: if space == Space::Hud {
+                        Vec3::new(120.0, -126.0, 0.0)
+                    } else {
+                        Vec3::new(1.0, 0.4, 1.0)
+                    },
+                    rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+                    scale: if space == Space::Hud {
+                        Vec3::new(1.3, 0.8, 1.0)
+                    } else {
+                        Vec3::new(0.02, 0.01, 1.0)
+                    },
+                };
+                let mut scene = scene(vec![Item::Text(Text {
+                    transform,
+                    spec: TextSpec {
+                        content: "An event".into(),
+                        font: FontId(0),
+                        size: 20.0,
+                        max_width: None,
+                    },
+                    color: [1.0; 4],
+                    background,
+                    layout: Some(TextLayout {
+                        glyphs: Vec::new().into(),
+                        bounds: [100.0, 27.0],
+                    }),
+                })]);
+                let clip = transform.clip_from_local(
+                    scene
+                        .camera
+                        .clip_from_world(viewport.x / viewport.y)
+                        .unwrap(),
+                    viewport,
+                );
+
+                // Include pane padding while rejecting points beyond each edge.
+                for (local, inside) in [
+                    (Vec3::new(50.0, -13.5, 0.0), true),
+                    (Vec3::new(-3.5, 3.5, 0.0), true),
+                    (Vec3::new(103.5, -30.5, 0.0), true),
+                    (Vec3::new(-4.5, -13.5, 0.0), false),
+                    (Vec3::new(104.5, -13.5, 0.0), false),
+                    (Vec3::new(50.0, 4.5, 0.0), false),
+                    (Vec3::new(50.0, -31.5, 0.0), false),
+                ] {
+                    let point = clip.project_point3(local).truncate();
+                    assert_eq!(
+                        scene.pick(point, viewport).is_some(),
+                        inside && background.is_some()
+                    );
+                }
+
+                let Item::Text(text) = &mut scene.items[0] else {
+                    unreachable!()
+                };
+                text.layout = None;
+                let point = clip.project_point3(Vec3::new(50.0, -13.5, 0.0)).truncate();
+                assert!(scene.pick(point, viewport).is_none());
+            }
         }
     }
 

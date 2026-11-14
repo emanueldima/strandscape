@@ -1,6 +1,6 @@
 use {
     crate::{
-        events::{Dataset, Date},
+        events::Dataset,
         sculptor::{self, Bounds, Composition, Emphasis, Entry, Map, Marker},
         text::FontId,
     },
@@ -13,7 +13,6 @@ pub(crate) use crate::sculptor::{Output, Target};
 
 pub(crate) struct Config<'a> {
     pub(crate) selected: Option<&'a str>,
-    pub(crate) reference: &'a Date,
     pub(crate) font: FontId,
     pub(crate) viewport: Vec2,
     pub(crate) timeline_offset: f32,
@@ -110,10 +109,6 @@ fn compose(dataset: &Dataset, config: &Config<'_>) -> Result<Composition, Compos
         bounds.south = (bounds.south - latitude_margin).max(-90.0);
         bounds.north = (bounds.north + latitude_margin).min(90.0);
         Some(Map {
-            reference: selected
-                .map_or(config.reference, |event| &event.date)
-                .label
-                .clone(),
             bounds,
             markers: places.into_values().collect(),
         })
@@ -142,7 +137,6 @@ mod tests {
             &data,
             &Config {
                 selected: None,
-                reference: &data.events[0].date,
                 font: FontId(0),
                 viewport: Vec2::new(800.0, 500.0),
                 timeline_offset: 0.0,
@@ -198,6 +192,68 @@ mod tests {
     }
 
     #[test]
+    fn timeline_labels_bind_events() {
+        let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
+        for offset in [0.0, f32::MAX] {
+            let mut output = build(
+                &data,
+                &Config {
+                    selected: None,
+                    font: FontId(0),
+                    viewport: Vec2::new(320.0, 500.0),
+                    timeline_offset: offset,
+                },
+            )
+            .unwrap();
+            let mut labels = Vec::new();
+            for (index, item) in output.scene.items.iter_mut().enumerate() {
+                let Item::Text(text) = item else {
+                    continue;
+                };
+                if text.transform.space != Space::Hud
+                    || text.transform.rotation == glam::Quat::IDENTITY
+                {
+                    continue;
+                }
+
+                let Some(Target::Entry(id, point)) = output.bindings.get(&index) else {
+                    panic!("timeline label must select its event");
+                };
+                let event = data.events.iter().find(|event| &event.id == id).unwrap();
+                assert!(text.spec.content.starts_with(&event.date.label));
+                assert_eq!(point.is_some(), event.place.is_some());
+                assert_eq!(text.background, Some([0.0; 4]));
+                text.layout = Some(crate::text::TextLayout {
+                    glyphs: Vec::new().into(),
+                    bounds: [80.0, 16.0],
+                });
+                labels.push((
+                    index,
+                    text.transform
+                        .matrix()
+                        .transform_point3(glam::Vec3::new(40.0, -8.0, 0.0)),
+                ));
+            }
+            assert!(!labels.is_empty());
+
+            output.scene.camera.orbit(Vec2::new(0.2, 0.1));
+            output.scene.camera.pan(Vec2::new(0.1, -0.2));
+            output.scene.camera.zoom(-250.0);
+            for (index, point) in labels {
+                let ndc = Vec2::new(point.x / 320.0 * 2.0 - 1.0, point.y / 500.0 * 2.0 + 1.0);
+                assert_eq!(
+                    output
+                        .scene
+                        .pick(ndc, Vec2::new(320.0, 500.0))
+                        .unwrap()
+                        .item,
+                    index
+                );
+            }
+        }
+    }
+
+    #[test]
     fn selection_highlights_both_views() {
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         let viewport = Vec2::new(800.0, 500.0);
@@ -206,13 +262,36 @@ mod tests {
                 &data,
                 &Config {
                     selected,
-                    reference: &data.events[0].date,
                     font: FontId(0),
                     viewport,
                     timeline_offset: 0.0,
                 },
             )
             .unwrap();
+            // Fixed HUD text is limited to the title and selected-event details.
+            assert_eq!(
+                output
+                    .scene
+                    .items
+                    .iter()
+                    .filter(|item| matches!(item,
+                        Item::Text(text) if text.transform.space == Space::Hud
+                            && text.transform.rotation == glam::Quat::IDENTITY
+                    ))
+                    .count(),
+                1 + usize::from(selected.is_some())
+            );
+            assert_eq!(
+                output
+                    .bindings
+                    .iter()
+                    .filter(|(index, target)| {
+                        matches!(target, Target::Entry(_, _))
+                            && matches!(&output.scene.items[**index], Item::Text(_))
+                    })
+                    .count(),
+                data.events.len()
+            );
             let mut hud_count = 0;
             let mut world_count = 0;
             let mut selected_dots = Vec::new();
@@ -276,13 +355,28 @@ mod tests {
                     if event.place.is_some() { 2 } else { 1 }
                 );
                 assert!(selected_dots.iter().all(|color| *color == selected_dots[0]));
+                let label = output
+                    .bindings
+                    .iter()
+                    .find_map(
+                        |(index, target)| match (target, &output.scene.items[*index]) {
+                            (Target::Entry(event_id, _), Item::Text(text)) if event_id == id => {
+                                Some(text)
+                            }
+                            _ => None,
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(label.color, selected_dots[0]);
             }
             let panes: Vec<_> = output
                 .scene
                 .items
                 .iter()
                 .filter_map(|item| match item {
-                    Item::Text(text) if text.background.is_some() => Some(text),
+                    Item::Text(text) if text.background.is_some_and(|color| color[3] > 0.0) => {
+                        Some(text)
+                    }
                     _ => None,
                 })
                 .collect();
@@ -351,7 +445,6 @@ mod tests {
         for viewport in [Vec2::new(320.0, 500.0), Vec2::new(600.0, 800.0)] {
             let mut config = Config {
                 selected: Some("einstein-miracle-year"),
-                reference: &data.events[0].date,
                 font: FontId(0),
                 viewport,
                 timeline_offset: 0.0,
@@ -365,7 +458,12 @@ mod tests {
                 .items
                 .iter()
                 .filter_map(|item| match item {
-                    Item::Text(text) => Some(text),
+                    Item::Text(text)
+                        if text.transform.space == Space::World
+                            || text.transform.rotation == glam::Quat::IDENTITY =>
+                    {
+                        Some(text)
+                    }
                     _ => None,
                 })
                 .collect();
@@ -374,7 +472,12 @@ mod tests {
                 .items
                 .iter()
                 .filter_map(|item| match item {
-                    Item::Text(text) => Some(text),
+                    Item::Text(text)
+                        if text.transform.space == Space::World
+                            || text.transform.rotation == glam::Quat::IDENTITY =>
+                    {
+                        Some(text)
+                    }
                     _ => None,
                 })
                 .collect();
@@ -403,7 +506,7 @@ mod tests {
                     _ => None,
                 })
                 .unwrap();
-            assert!((last_dot.transform.translation.x - (viewport.x - 24.0)).abs() < 0.001);
+            assert!((last_dot.transform.translation.x - (viewport.x - 184.0)).abs() < 0.001);
 
             // Scrolling exposes every event, including those without a location.
             let mut seen = std::collections::BTreeSet::new();
@@ -436,7 +539,6 @@ mod tests {
             &data,
             &Config {
                 selected: None,
-                reference: &data.events[0].date,
                 font: FontId(0),
                 viewport: Vec2::new(800.0, 500.0),
                 timeline_offset: 0.0,
@@ -466,14 +568,12 @@ mod tests {
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         let mut config = Config {
             selected: Some("einstein-miracle-year"),
-            reference: &data.events[0].date,
             font: FontId(0),
             viewport: Vec2::new(800.0, 500.0),
             timeline_offset: 0.0,
         };
         let composition = compose(&data, &config).unwrap();
         let map = composition.map.unwrap();
-        assert_eq!(map.reference, "1905");
         assert!(
             map.markers
                 .iter()
@@ -482,7 +582,6 @@ mod tests {
         config.selected = Some("einstein-nobel");
         let composition = compose(&data, &config).unwrap();
         let map = composition.map.unwrap();
-        assert_eq!(map.reference, "1922");
         assert!(
             map.markers
                 .iter()
@@ -503,7 +602,6 @@ mod tests {
             &data,
             &Config {
                 selected: None,
-                reference: &data.events[0].date,
                 font: FontId(0),
                 viewport: Vec2::new(800.0, 500.0),
                 timeline_offset: 0.0,
