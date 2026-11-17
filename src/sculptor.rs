@@ -22,7 +22,7 @@ pub(crate) struct Timeline {
 }
 
 pub(crate) enum Target {
-    Entry(String, Option<Vec3>),
+    Entry(String),
     Place(String, Vec3),
 }
 
@@ -44,6 +44,7 @@ pub(crate) struct Entry {
 pub(crate) struct Map {
     pub(crate) bounds: Bounds,
     pub(crate) markers: Vec<Marker>,
+    pub(crate) coastlines: Vec<[[f64; 2]; 2]>,
 }
 
 pub(crate) struct Bounds {
@@ -89,18 +90,6 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
     }
     let mut items = Vec::new();
     let mut bindings = HashMap::new();
-    let focus = Vec3::new(0.0, HEIGHT_SPAN * 0.5, 0.0);
-    let fov = 45.0_f32.to_radians();
-    let distance = VIEW_HALF_HEIGHT.max(VIEW_HALF_WIDTH * config.viewport.y / config.viewport.x)
-        / (fov * 0.5).tan();
-    let position = focus + Vec3::Y * distance;
-    let camera = Camera::new(CameraConfig {
-        position,
-        focus,
-        vertical_fov: fov,
-        near: 0.1,
-        far: 200.0,
-    });
     text(
         &mut items,
         &composition.title,
@@ -147,6 +136,16 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
                 Vec3::new(-size.x * 0.5, SURFACE_OFFSET, fraction * size.y),
                 Vec3::new(size.x * 0.5, SURFACE_OFFSET, fraction * size.y),
                 GRID,
+                Vec3::Y,
+            );
+        }
+        // Coastlines share the event projection so map locations stay aligned.
+        for [[west, south], [east, north]] in &map.coastlines {
+            line(
+                &mut items,
+                projection.project(*south, *west) + Vec3::Y * SURFACE_OFFSET,
+                projection.project(*north, *east) + Vec3::Y * SURFACE_OFFSET,
+                COASTLINE,
                 Vec3::Y,
             );
         }
@@ -203,7 +202,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             .zip(projection.as_ref())
             .map(|(place, projection)| projection.project(place.latitude, place.longitude));
         let color = if entry.emphasis == Emphasis::Selected {
-            ACCENT
+            SELECTED_EVENT
         } else {
             INK
         };
@@ -217,7 +216,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             tube(&mut items, previous, point, ACCENT);
         }
         previous = Some(point);
-        bindings.insert(items.len(), Target::Entry(entry.id.clone(), Some(point)));
+        bindings.insert(items.len(), Target::Entry(entry.id.clone()));
         items.push(Item::Sphere(Sphere {
             center: point,
             radius: EVENT_RADIUS
@@ -270,16 +269,8 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         if x < 0.0 || x > width {
             continue;
         }
-        let point = entry
-            .place
-            .as_ref()
-            .zip(projection.as_ref())
-            .map(|(place, projection)| {
-                projection.project(place.latitude, place.longitude)
-                    + Vec3::Y * (HEIGHT_BASE + ((entry.time - start) / span) as f32 * HEIGHT_SPAN)
-            });
         let position = Vec3::new(HUD_MARGIN + x, baseline, 0.0);
-        bindings.insert(items.len(), Target::Entry(entry.id.clone(), point));
+        bindings.insert(items.len(), Target::Entry(entry.id.clone()));
         items.push(Item::Dot(Dot {
             transform: Transform {
                 space: Space::Hud,
@@ -294,13 +285,13 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
                     1.0
                 },
             color: if entry.emphasis == Emphasis::Selected {
-                ACCENT
+                SELECTED_EVENT
             } else {
                 INK
             },
         }));
         // Keep small dots easy to select without changing their visible spacing.
-        bindings.insert(items.len(), Target::Entry(entry.id.clone(), point));
+        bindings.insert(items.len(), Target::Entry(entry.id.clone()));
         items.push(Item::Plane(Plane {
             transform: Transform {
                 space: Space::Hud,
@@ -318,7 +309,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             content.pop();
             content.push('…');
         }
-        bindings.insert(items.len(), Target::Entry(entry.id.clone(), point));
+        bindings.insert(items.len(), Target::Entry(entry.id.clone()));
         items.push(Item::Text(Text {
             transform: Transform {
                 space: Space::Hud,
@@ -334,7 +325,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             },
             // Keep the selected label visible and match its highlighted dot.
             color: if entry.emphasis == Emphasis::Selected {
-                ACCENT
+                SELECTED_EVENT
             } else {
                 MUTED
             },
@@ -377,6 +368,41 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         );
     }
 
+    // Fit the map and raised events between the title and timeline, including on wide views.
+    let half_size =
+        composition
+            .map
+            .as_ref()
+            .zip(projection.as_ref())
+            .map_or(Vec2::ONE, |(map, projection)| {
+                let corner = projection.project(map.bounds.south, map.bounds.east);
+                Vec2::new(corner.x, corner.z)
+            });
+    let fov = 45.0_f32.to_radians();
+    let focal_length = config.viewport.y / (2.0 * (fov * 0.5).tan());
+    let map_top = HUD_MARGIN + HUD_LINE_HEIGHT;
+    let map_bottom = (top - HUD_MARGIN).max(map_top + 1.0);
+    let top_slope = (config.viewport.y * 0.5 - map_top) / focal_length;
+    let bottom_slope = (map_bottom - config.viewport.y * 0.5) / focal_length;
+    let height = HEIGHT_BASE + HEIGHT_SPAN;
+    let bottom_height = if bottom_slope >= 0.0 { height } else { 0.0 };
+    let distance = ((2.0 * half_size.y + top_slope * height + bottom_slope * bottom_height)
+        / (top_slope + bottom_slope))
+        .max(
+            half_size.x * 2.0 * focal_length / (config.viewport.x - 2.0 * HUD_MARGIN).max(1.0)
+                + height,
+        );
+    let north = top_slope * (distance - height) - half_size.y;
+    let south = half_size.y - bottom_slope * (distance - bottom_height);
+    let focus = Vec3::new(0.0, 0.0, (north + south) * 0.5);
+    let camera = Camera::new(CameraConfig {
+        position: focus + Vec3::Y * distance,
+        focus,
+        vertical_fov: fov,
+        near: 0.1,
+        far: (distance + 1.0).max(200.0),
+    });
+
     Ok(Output {
         scene: Scene::new(SceneConfig { camera, items }),
         bindings,
@@ -409,7 +435,9 @@ const PANEL: [f32; 4] = [0.035, 0.10, 0.13, 1.0];
 const INK: [f32; 4] = [0.91, 0.84, 0.66, 1.0];
 const MUTED: [f32; 4] = [0.42, 0.61, 0.64, 1.0];
 const ACCENT: [f32; 4] = [1.0, 0.72, 0.30, 1.0];
+const SELECTED_EVENT: [f32; 4] = [1.0, 0.15, 0.15, 1.0];
 const GRID: [f32; 4] = [0.055, 0.16, 0.19, 1.0];
+const COASTLINE: [f32; 4] = [0.25, 0.43, 0.39, 1.0];
 const MAP_WIDTH: f64 = 14.0;
 const MAP_DEPTH: f64 = 8.0;
 const GRID_STEPS: usize = 6;
@@ -423,11 +451,10 @@ const MARKER_SIZE: f32 = 0.16;
 const EVENT_RADIUS: f32 = 0.04;
 const SELECTED_SCALE: f32 = 1.5;
 const LINE_WIDTH: f32 = 0.025;
+const TUBE_OPACITY: f32 = 0.5;
 const TEXT_SCALE: f32 = 0.009;
 const LABEL_GAP: f32 = 0.2;
 const LABEL_OPACITY: f32 = 0.5;
-const VIEW_HALF_WIDTH: f32 = 11.5;
-const VIEW_HALF_HEIGHT: f32 = 8.5;
 const HUD_MARGIN: f32 = 24.0;
 const HUD_LINE_HEIGHT: f32 = 28.0;
 const HUD_DOT_RADIUS: f32 = 4.0;
@@ -517,7 +544,7 @@ fn tube(items: &mut Vec<Item>, start: Vec3, end: Vec3, color: [f32; 4]) {
         start,
         end,
         radius: LINE_WIDTH * 0.5,
-        color,
+        color: [color[0], color[1], color[2], color[3] * TUBE_OPACITY],
     }));
 }
 
@@ -610,6 +637,7 @@ mod tests {
                     north: 48.0,
                 },
                 markers: vec![place],
+                coastlines: Vec::new(),
             }),
         };
         let output = build(
@@ -629,7 +657,7 @@ mod tests {
                     .bindings
                     .iter()
                     .filter_map(|(index, target)| match target {
-                        Target::Entry(id, _) if id == &entry.id => Some(*index),
+                        Target::Entry(id) if id == &entry.id => Some(*index),
                         _ => None,
                     })
                     .min()
@@ -650,7 +678,7 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Tube(tube) if tube.color == ACCENT => Some(tube),
+                Item::Tube(tube) if tube.color[..3] == ACCENT[..3] => Some(tube),
                 _ => None,
             })
             .collect();
@@ -659,6 +687,7 @@ mod tests {
             assert!(segment.start.abs_diff_eq(pair[0], 0.001));
             assert!(segment.end.abs_diff_eq(pair[1], 0.001));
             assert_eq!(segment.radius, LINE_WIDTH * 0.5);
+            assert_eq!(segment.color[3], TUBE_OPACITY);
         }
 
         let stems: Vec<_> = output
@@ -669,13 +698,14 @@ mod tests {
             .filter_map(|(index, item)| {
                 let Item::Tube(tube) = item else { return None };
                 assert!(!output.bindings.contains_key(&index));
-                (tube.color == GRID).then_some(tube)
+                (tube.color[..3] == GRID[..3]).then_some(tube)
             })
             .collect();
         assert_eq!(stems.len(), points.len());
         for (stem, point) in stems.iter().zip(&points) {
             assert_eq!(stem.start, Vec3::new(point.x, 0.0, point.z));
             assert_eq!(stem.end, *point);
+            assert_eq!(stem.color[3], TUBE_OPACITY);
         }
 
         composition.strand[1].place = None;
@@ -693,7 +723,7 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Tube(tube) if tube.color == ACCENT => Some(tube),
+                Item::Tube(tube) if tube.color[..3] == ACCENT[..3] => Some(tube),
                 _ => None,
             })
             .collect();
@@ -744,7 +774,7 @@ mod tests {
             output
                 .bindings
                 .values()
-                .all(|target| matches!(target, Target::Entry(id, None) if id == "unknown"))
+                .all(|target| matches!(target, Target::Entry(id) if id == "unknown"))
         );
     }
 }

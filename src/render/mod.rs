@@ -5,7 +5,7 @@ mod tube;
 
 use {
     crate::{
-        scene::{Item, Scene, Space},
+        scene::{Item, Scene, Space, Tube},
         text::{FontError, FontSystem, GlyphImage, GlyphKey, TextLayout},
     },
     bytemuck::{Pod, Zeroable},
@@ -98,6 +98,8 @@ impl Renderer {
             },
         };
 
+        let mut tubes = Vec::new();
+
         // Flatten domain objects into drawing data; only the backend sees wgpu.
         for item in &mut scene.items {
             match item {
@@ -140,7 +142,7 @@ impl Renderer {
                     list.spheres.extend(sphere::build(sphere, clip_from_world));
                 }
                 Item::Tube(tube) => {
-                    list.tubes.extend(tube::build(tube, clip_from_world));
+                    tubes.push(&*tube);
                 }
                 Item::Text(text) => {
                     let layout = self.fonts.layout(&text.spec)?;
@@ -167,6 +169,10 @@ impl Renderer {
             }
         }
 
+        sort_tubes(&mut tubes, clip_from_world);
+        for tube in tubes {
+            list.tubes.extend(tube::build(tube, clip_from_world));
+        }
         sort_text(&mut list.text.runs);
         self.gpu.draw(&list)
     }
@@ -223,6 +229,12 @@ const QUAD: [[f32; 2]; 6] = [
 
 const DOT_SEGMENTS: usize = 24;
 
+fn sort_tubes(tubes: &mut [&Tube], clip_from_world: Mat4) {
+    // Blend far tubes first, using view depth rather than distance from the eye.
+    let depth = |tube: &Tube| (clip_from_world * ((tube.start + tube.end) * 0.5).extend(1.0)).w;
+    tubes.sort_by(|a, b| depth(b).total_cmp(&depth(a)));
+}
+
 fn sort_text(runs: &mut [TextDraw]) {
     // Blend distant labels first; keep HUD order stable above the world.
     runs.sort_by(|a, b| {
@@ -242,6 +254,25 @@ fn sort_text(runs: &mut [TextDraw]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tube_order_follows_camera() {
+        let tubes = [Vec3::X * -2.0, Vec3::new(1.0, 0.0, 1.0), Vec3::Z * -2.0].map(|center| Tube {
+            start: center - Vec3::Y,
+            end: center + Vec3::Y,
+            radius: 0.1,
+            color: [1.0; 4],
+        });
+        for (eye, order) in [(Vec3::Z * 6.0, [2, 0, 1]), (Vec3::X * 6.0, [0, 2, 1])] {
+            let clip = Mat4::perspective_rh(45.0_f32.to_radians(), 1.0, 0.1, 100.0)
+                * Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
+            let mut sorted: Vec<_> = tubes.iter().collect();
+            sort_tubes(&mut sorted, clip);
+            for (tube, index) in sorted.into_iter().zip(order) {
+                assert_eq!(tube.start, tubes[index].start);
+            }
+        }
+    }
 
     #[test]
     fn orders_world_before_hud() {

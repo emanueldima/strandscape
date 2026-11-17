@@ -7,6 +7,8 @@ mod composer;
 #[cfg(any(target_arch = "wasm32", test))]
 mod events;
 #[cfg(any(target_arch = "wasm32", test))]
+mod geography;
+#[cfg(any(target_arch = "wasm32", test))]
 mod render;
 #[cfg(any(target_arch = "wasm32", test))]
 mod scene;

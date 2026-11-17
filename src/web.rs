@@ -2,6 +2,7 @@ use {
     crate::{
         composer::{self, Target as Subject},
         events::Dataset,
+        geography,
         render::{RenderConfig, Renderer, Target, Viewport},
         text::{FontConfig, FontId, FontSystem},
     },
@@ -13,6 +14,7 @@ use {
 #[wasm_bindgen]
 pub struct WebApp {
     dataset: Dataset,
+    geography: geography::Dataset,
     output: composer::Output,
     renderer: Renderer,
     viewport: Vec2,
@@ -33,12 +35,14 @@ impl WebApp {
         })?;
 
         let dataset = Dataset::parse(include_bytes!("../data/einstein.json"))?;
+        let geography = geography::Dataset::parse(include_bytes!("../data/coastlines.geojson"))?;
         let viewport =
             (Vec2::new(width as f32, height as f32) / scale_factor as f32).max(Vec2::ONE);
         let output = composer::build(
             &dataset,
             &composer::Config {
                 selected: None,
+                geography: &geography,
                 font: FONT,
                 viewport,
                 timeline_offset: 0.0,
@@ -59,6 +63,7 @@ impl WebApp {
         .await?;
         Ok(Self {
             dataset,
+            geography,
             output,
             renderer,
             viewport,
@@ -100,16 +105,9 @@ impl WebApp {
         else {
             return Ok(None);
         };
-        let point = match self.output.bindings.get(&hit.item) {
-            Some(Subject::Entry(_, point)) => *point,
-            Some(Subject::Place(_, point)) => Some(*point),
-            None => return Ok(None),
-        };
-        if let Some(point) = point {
-            self.output.scene.camera.focus(point);
-        }
         match self.output.bindings.get(&hit.item) {
-            Some(Subject::Entry(id, _)) => {
+            Some(Subject::Entry(id)) => {
+                // Event selection updates emphasis while preserving the user's map view.
                 let title = self
                     .dataset
                     .events
@@ -120,13 +118,16 @@ impl WebApp {
                 self.rebuild(self.output.timeline.offset)?;
                 Ok(title)
             }
-            Some(Subject::Place(id, _)) => Ok(self
-                .dataset
-                .events
-                .iter()
-                .filter_map(|event| event.place.as_ref())
-                .find(|place| &place.id == id)
-                .map(|place| place.name.clone())),
+            Some(Subject::Place(id, point)) => {
+                self.output.scene.camera.focus(*point);
+                Ok(self
+                    .dataset
+                    .events
+                    .iter()
+                    .filter_map(|event| event.place.as_ref())
+                    .find(|place| &place.id == id)
+                    .map(|place| place.name.clone()))
+            }
             None => Ok(None),
         }
     }
@@ -158,6 +159,7 @@ impl WebApp {
             &self.dataset,
             &composer::Config {
                 selected: self.selected.as_deref(),
+                geography: &self.geography,
                 font: FONT,
                 viewport: self.viewport,
                 timeline_offset,

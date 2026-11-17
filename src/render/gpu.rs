@@ -184,8 +184,9 @@ impl Gpu {
                 pass.set_vertex_buffer(0, plane_vertices.slice(..));
                 pass.draw(0..list.planes.len() as u32, 0..1);
             }
-            self.tubes.draw(&mut pass);
             self.spheres.draw(&mut pass);
+            // Blend tubes over opaque geometry without blocking later transparent tubes.
+            self.tubes.draw(&mut pass);
             self.text.draw(&mut pass);
         }
         self.queue.submit([encoder.finish()]);

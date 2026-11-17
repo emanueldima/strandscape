@@ -48,7 +48,9 @@ impl Camera {
         } else {
             MIN_DISTANCE
         };
-        let yaw = offset.x.atan2(offset.z) + delta.x * ORBIT_SPEED;
+        // Preserve heading at the pole, where tiny position errors make azimuth unstable.
+        let right = self.rotation * Vec3::X;
+        let yaw = (-right.z).atan2(right.x) + delta.x * ORBIT_SPEED;
         let pitch = ((offset.y / distance).clamp(-1.0, 1.0).asin() - delta.y * ORBIT_SPEED)
             .clamp(-MAX_PITCH, MAX_PITCH);
 
@@ -157,6 +159,38 @@ const ZOOM_SPEED: f32 = 0.001;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orbit_from_top_keeps_north() {
+        for drift in [
+            Vec2::ZERO,
+            Vec2::new(0.0, -0.000001),
+            Vec2::new(0.000001, 0.0),
+        ] {
+            for delta in [
+                Vec2::new(0.001, 0.0),
+                Vec2::new(-0.001, 0.0),
+                Vec2::new(0.0, 0.001),
+                Vec2::new(0.0, -0.001),
+            ] {
+                let mut camera = Camera::new(CameraConfig {
+                    position: Vec3::new(drift.x, 6.0, drift.y),
+                    focus: Vec3::ZERO,
+                    vertical_fov: 45.0_f32.to_radians(),
+                    near: 0.1,
+                    far: 100.0,
+                });
+                let north = camera.rotation * Vec3::Y;
+
+                // Tiny residual offsets near the pole must not change the initial heading.
+                camera.orbit(delta);
+                assert!(
+                    north.dot(camera.rotation * Vec3::Y) > 0.99,
+                    "north flipped for drift {drift:?} and drag {delta:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn orbit_keeps_focus_and_distance() {

@@ -1,6 +1,7 @@
 use {
     crate::{
         events::Dataset,
+        geography,
         sculptor::{self, Bounds, Composition, Emphasis, Entry, Map, Marker},
         text::FontId,
     },
@@ -13,6 +14,7 @@ pub(crate) use crate::sculptor::{Output, Target};
 
 pub(crate) struct Config<'a> {
     pub(crate) selected: Option<&'a str>,
+    pub(crate) geography: &'a geography::Dataset,
     pub(crate) font: FontId,
     pub(crate) viewport: Vec2,
     pub(crate) timeline_offset: f32,
@@ -109,6 +111,10 @@ fn compose(dataset: &Dataset, config: &Config<'_>) -> Result<Composition, Compos
         bounds.south = (bounds.south - latitude_margin).max(-90.0);
         bounds.north = (bounds.north + latitude_margin).min(90.0);
         Some(Map {
+            coastlines: geography::build(
+                config.geography,
+                [bounds.west, bounds.south, bounds.east, bounds.north],
+            ),
             bounds,
             markers: places.into_values().collect(),
         })
@@ -131,12 +137,64 @@ mod tests {
     };
 
     #[test]
+    fn initial_view_fits_places() {
+        let geography =
+            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
+        for viewport in [
+            Vec2::new(1280.0, 400.0),
+            Vec2::new(800.0, 500.0),
+            Vec2::new(390.0, 844.0),
+        ] {
+            let output = build(
+                &data,
+                &Config {
+                    selected: None,
+                    geography: &geography,
+                    font: FontId(0),
+                    viewport,
+                    timeline_offset: 0.0,
+                },
+            )
+            .unwrap();
+            let clip = output
+                .scene
+                .camera
+                .clip_from_world(viewport.x / viewport.y)
+                .unwrap();
+            for (index, target) in &output.bindings {
+                let point = match target {
+                    Target::Place(_, point) => *point,
+                    Target::Entry(_) => match &output.scene.items[*index] {
+                        Item::Sphere(sphere) => sphere.center,
+                        _ => continue,
+                    },
+                };
+                let point = clip.project_point3(point);
+                let pixel =
+                    Vec2::new((point.x + 1.0) * viewport.x, (1.0 - point.y) * viewport.y) * 0.5;
+                assert!(
+                    pixel.x >= 24.0 && pixel.x <= viewport.x - 24.0,
+                    "{pixel:?} in {viewport:?}"
+                );
+                assert!(
+                    pixel.y >= 52.0 && pixel.y <= output.timeline.top - 24.0,
+                    "{pixel:?} in {viewport:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn build_preserves_ids() {
+        let geography =
+            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         let output = build(
             &data,
             &Config {
                 selected: None,
+                geography: &geography,
                 font: FontId(0),
                 viewport: Vec2::new(800.0, 500.0),
                 timeline_offset: 0.0,
@@ -147,7 +205,7 @@ mod tests {
             .bindings
             .values()
             .filter_map(|target| match target {
-                Target::Entry(id, _) => Some(id.as_str()),
+                Target::Entry(id) => Some(id.as_str()),
                 _ => None,
             })
             .collect();
@@ -202,6 +260,8 @@ mod tests {
 
     #[test]
     fn place_labels_pick_their_place() {
+        let geography =
+            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
         let mut data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         data.events
             .retain(|event| event.place.as_ref().is_some_and(|place| place.id == "ulm"));
@@ -210,6 +270,7 @@ mod tests {
             &data,
             &Config {
                 selected: None,
+                geography: &geography,
                 font: FontId(0),
                 viewport,
                 timeline_offset: 0.0,
@@ -263,12 +324,15 @@ mod tests {
 
     #[test]
     fn timeline_labels_bind_events() {
+        let geography =
+            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         for offset in [0.0, f32::MAX] {
             let mut output = build(
                 &data,
                 &Config {
                     selected: None,
+                    geography: &geography,
                     font: FontId(0),
                     viewport: Vec2::new(320.0, 500.0),
                     timeline_offset: offset,
@@ -286,12 +350,11 @@ mod tests {
                     continue;
                 }
 
-                let Some(Target::Entry(id, point)) = output.bindings.get(&index) else {
+                let Some(Target::Entry(id)) = output.bindings.get(&index) else {
                     panic!("timeline label must select its event");
                 };
                 let event = data.events.iter().find(|event| &event.id == id).unwrap();
                 assert!(text.spec.content.starts_with(&event.date.label));
-                assert_eq!(point.is_some(), event.place.is_some());
                 assert_eq!(text.background, Some([0.0; 4]));
                 text.layout = Some(crate::text::TextLayout {
                     glyphs: Vec::new().into(),
@@ -325,6 +388,8 @@ mod tests {
 
     #[test]
     fn selection_highlights_both_views() {
+        let geography =
+            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         let viewport = Vec2::new(800.0, 500.0);
         for selected in [None, Some("einstein-miracle-year"), Some("einstein-nobel")] {
@@ -332,6 +397,7 @@ mod tests {
                 &data,
                 &Config {
                     selected,
+                    geography: &geography,
                     font: FontId(0),
                     viewport,
                     timeline_offset: 0.0,
@@ -356,7 +422,7 @@ mod tests {
                     .bindings
                     .iter()
                     .filter(|(index, target)| {
-                        matches!(target, Target::Entry(_, _))
+                        matches!(target, Target::Entry(_))
                             && matches!(&output.scene.items[**index], Item::Text(_))
                     })
                     .count(),
@@ -366,7 +432,7 @@ mod tests {
             let mut world_count = 0;
             let mut selected_dots = Vec::new();
             for (index, target) in &output.bindings {
-                let Target::Entry(id, point) = target else {
+                let Target::Entry(id) = target else {
                     continue;
                 };
                 let (space, position, radius, color) = match &output.scene.items[*index] {
@@ -385,7 +451,6 @@ mod tests {
                 if space == Space::World {
                     world_count += 1;
                     assert!(event.place.is_some());
-                    assert_eq!(Some(position), *point);
                     assert_eq!(
                         radius,
                         if selected == Some(id.as_str()) {
@@ -397,7 +462,6 @@ mod tests {
                 } else {
                     hud_count += 1;
                     assert_eq!(position.y, -476.0);
-                    assert_eq!(point.is_some(), event.place.is_some());
                     assert_eq!(
                         radius,
                         if selected == Some(id.as_str()) {
@@ -412,7 +476,7 @@ mod tests {
                     );
                     let hit = output.scene.pick(ndc, viewport, |_| true).unwrap();
                     assert!(
-                        matches!(&output.bindings[&hit.item], Target::Entry(hit_id, _) if hit_id == id)
+                        matches!(&output.bindings[&hit.item], Target::Entry(hit_id) if hit_id == id)
                     );
                 }
                 if selected == Some(id.as_str()) {
@@ -439,7 +503,7 @@ mod tests {
                     .iter()
                     .find_map(
                         |(index, target)| match (target, &output.scene.items[*index]) {
-                            (Target::Entry(event_id, _), Item::Text(text)) if event_id == id => {
+                            (Target::Entry(event_id), Item::Text(text)) if event_id == id => {
                                 Some(text)
                             }
                             _ => None,
@@ -497,7 +561,7 @@ mod tests {
             output.scene.camera.zoom(-250.0);
             output.scene.camera.focus(glam::Vec3::new(3.0, 2.0, 1.0));
             for (index, target) in &output.bindings {
-                let Target::Entry(id, _) = target else {
+                let Target::Entry(id) = target else {
                     continue;
                 };
                 let Item::Dot(dot) = &output.scene.items[*index] else {
@@ -512,7 +576,7 @@ mod tests {
                 );
                 let hit = output.scene.pick(ndc, viewport, |_| true).unwrap();
                 assert!(
-                    matches!(&output.bindings[&hit.item], Target::Entry(hit_id, _) if hit_id == id)
+                    matches!(&output.bindings[&hit.item], Target::Entry(hit_id) if hit_id == id)
                 );
             }
         }
@@ -520,10 +584,13 @@ mod tests {
 
     #[test]
     fn scrolling_keeps_hud_text_fixed() {
+        let geography =
+            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         for viewport in [Vec2::new(320.0, 500.0), Vec2::new(600.0, 800.0)] {
             let mut config = Config {
                 selected: Some("einstein-miracle-year"),
+                geography: &geography,
                 font: FontId(0),
                 viewport,
                 timeline_offset: 0.0,
@@ -593,7 +660,7 @@ mod tests {
                 config.timeline_offset = step as f32;
                 let output = build(&data, &config).unwrap();
                 for (index, target) in &output.bindings {
-                    if let (Target::Entry(id, _), Item::Dot(dot)) =
+                    if let (Target::Entry(id), Item::Dot(dot)) =
                         (target, &output.scene.items[*index])
                         && dot.transform.space == Space::Hud
                     {
@@ -612,12 +679,15 @@ mod tests {
 
     #[test]
     fn infers_map_and_orders_strand() {
+        let geography =
+            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
         let mut data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         data.events.reverse();
         let composition = compose(
             &data,
             &Config {
                 selected: None,
+                geography: &geography,
                 font: FontId(0),
                 viewport: Vec2::new(800.0, 500.0),
                 timeline_offset: 0.0,
@@ -644,9 +714,12 @@ mod tests {
 
     #[test]
     fn selection_sets_map_context() {
+        let geography =
+            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         let mut config = Config {
             selected: Some("einstein-miracle-year"),
+            geography: &geography,
             font: FontId(0),
             viewport: Vec2::new(800.0, 500.0),
             timeline_offset: 0.0,
@@ -675,12 +748,15 @@ mod tests {
 
     #[test]
     fn unlocated_events_need_no_map() {
+        let geography =
+            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
         let mut data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         data.events.retain(|event| event.place.is_none());
         let composition = compose(
             &data,
             &Config {
                 selected: None,
+                geography: &geography,
                 font: FontId(0),
                 viewport: Vec2::new(800.0, 500.0),
                 timeline_offset: 0.0,
