@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-17
+
+- Request: make the tubes semitransparent.
+- Set event connections and vertical stems to 50% opacity. Enabled alpha blending without depth writes, sorted tubes back-to-front each frame, and drew opaque spheres first. APIs unchanged.
+
+- Request: make the selected event dot red.
+- Changed selected map and timeline event dots, plus their matching timeline label, to red.
+
+- Request: add a physical Earth baseline, initially fit all timeline places, and keep the camera still when selecting events.
+- Added a pure geography module to parse and clip bundled public-domain Natural Earth coastlines; composer supplies paths and sculptor projects them through the existing scene primitives.
+- Fit all timeline locations above the HUD on wide and portrait viewports; event selection preserves the camera while map-place clicks still recenter it. Added coastline and initial-view regressions.
+- Removed event camera targets from selection bindings, which now carry only the event ID.
+
+- Request: prevent the initial rotation from flipping the map upside down.
+- Orbit derives heading from the camera orientation instead of unstable near-vertical position offsets. Added a first-orbit regression with tiny offsets and drags in every direction; no API changes.
+
 ## 2026-11-14
 
 - Request: scroll to zoom, drag to move the map, and Cmd/Ctrl-drag to change the angle.

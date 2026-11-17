@@ -24,6 +24,7 @@ Information from multiple sources can be explored together, with its origins pre
 | Module | Responsibility |
 | --- | --- |
 | `events` | Parse and validate event data. |
+| `geography` | Parse coastline GeoJSON and clip paths to geographic bounds. |
 | `composer` | Infer map context and compose event strands. |
 | `sculptor` | Translate compositions into scene primitives. |
 | `scene` | World/HUD primitives and hit testing. |
@@ -42,7 +43,9 @@ The example embeds `data/einstein.json`. Scene construction and rendering are se
 web/app.js
 ├── WebApp::create(...)
 │   ├── events::Dataset::parse(json) → Dataset
+│   ├── geography::Dataset::parse(geojson) → geography
 │   └── composer::build(dataset, config) → scene + selection bindings
+│       ├── geography::build(geography, bounds) → coastline segments
 │       └── sculptor::build(composition, config)
 │           └── scene::Scene::new(config)
 └── WebApp::draw()
@@ -55,8 +58,16 @@ web/app.js
             └── wgpu → canvas
 ```
 
-The current experiment uses one schematic map with a chronological polyline above
-it. The initial view looks straight down, with north at the top.
+The current experiment uses one map with a chronological polyline above it.
+Its physical baseline uses bundled present-day coastlines from
+[Natural Earth 1:110m](https://www.naturalearthdata.com/downloads/110m-physical-vectors/),
+[release v5.1.2](https://github.com/nvkelso/natural-earth-vector/blob/v5.1.2/geojson/ne_110m_coastline.geojson).
+The data is [public domain](https://www.naturalearthdata.com/about/terms-of-use/)
+and stored unchanged in `data/coastlines.geojson`. No modern political borders or
+background settlements are included. These coastlines are a baseline, not a
+reconstruction of historical shorelines.
+The initial view looks straight down, with north at the top, and fits all timeline
+locations with padding above the HUD timeline.
 Longitude and latitude determine horizontal position; elapsed time determines
 height across a shallow 0.9-unit span. Place names sit on the map; 3D events use
 shaded sphere impostors with surface depth and ray–sphere picking, without labels.
@@ -68,8 +79,9 @@ and a shortened description. Scroll over its bottom strip to move an overflowing
 timeline and its labels horizontally;
 the rest of the HUD stays fixed. Selecting an event enlarges and highlights its HUD
 and 3D dots and its timeline label, and shows its date and description in an opaque
-HUD pane. The dataset title stays on the HUD. The 3D line connects successive located events,
-skipping unknown locations; selecting unknown events leaves the camera unchanged.
+HUD pane. Event selection preserves the camera; clicking a map place still recenters it.
+The dataset title stays on the HUD. The 3D line connects successive located events,
+skipping unknown locations.
 All events, including Princeton, remain available.
 Historical geography is deferred.
 
