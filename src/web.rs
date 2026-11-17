@@ -1,25 +1,11 @@
 use {
-    crate::{
-        composer::{self, Target as Subject},
-        events::Dataset,
-        geography,
-        render::{RenderConfig, Renderer, Target, Viewport},
-        text::{FontConfig, FontId, FontSystem},
-    },
-    glam::{Vec2, Vec3},
+    crate::app::{App, Target, Viewport},
     wasm_bindgen::{JsError, prelude::wasm_bindgen},
     web_sys::HtmlCanvasElement,
 };
 
 #[wasm_bindgen]
-pub struct WebApp {
-    dataset: Dataset,
-    geography: geography::Dataset,
-    output: composer::Output,
-    renderer: Renderer,
-    viewport: Vec2,
-    selected: Option<String>,
-}
+pub struct WebApp(App);
 
 #[wasm_bindgen]
 impl WebApp {
@@ -29,148 +15,65 @@ impl WebApp {
         width: u32,
         height: u32,
         scale_factor: f64,
+        preference: &str,
     ) -> Result<WebApp, JsError> {
-        let fonts = FontSystem::new(FontConfig {
-            fonts: vec![(FONT, font_bytes)],
-        })?;
-
-        let dataset = Dataset::parse(include_bytes!("../data/einstein.json"))?;
-        let geography = geography::Dataset::parse(include_bytes!("../data/coastlines.geojson"))?;
-        let viewport =
-            (Vec2::new(width as f32, height as f32) / scale_factor as f32).max(Vec2::ONE);
-        let output = composer::build(
-            &dataset,
-            &composer::Config {
-                selected: None,
-                geography: &geography,
-                font: FONT,
-                viewport,
-                timeline_offset: 0.0,
-            },
-        )?;
-        let renderer = Renderer::new(
+        let (app, css) = App::create(
             Target::from(canvas),
-            fonts,
-            RenderConfig {
-                viewport: Viewport {
-                    width,
-                    height,
-                    scale_factor,
-                },
-                clear_color: [0.012, 0.023, 0.033, 1.0],
+            font_bytes,
+            Viewport {
+                width,
+                height,
+                scale_factor,
             },
+            preference,
         )
         .await?;
-        Ok(Self {
-            dataset,
-            geography,
-            output,
-            renderer,
-            viewport,
-            selected: None,
-        })
+        apply_style(&css)?;
+        Ok(Self(app))
+    }
+
+    pub fn set_theme(&mut self, preference: &str) -> Result<(), JsError> {
+        apply_style(&self.0.set_theme(preference)?)
     }
 
     pub fn draw(&mut self) -> Result<(), JsError> {
-        self.renderer.draw(&mut self.output.scene)?;
-        Ok(())
+        Ok(self.0.draw()?)
     }
 
     pub fn resize(&mut self, width: u32, height: u32, scale_factor: f64) -> Result<(), JsError> {
-        self.viewport =
-            (Vec2::new(width as f32, height as f32) / scale_factor as f32).max(Vec2::ONE);
-        self.renderer.resize(Viewport {
+        Ok(self.0.resize(Viewport {
             width,
             height,
             scale_factor,
-        });
-        self.rebuild(self.output.timeline.offset)
+        })?)
     }
 
     pub fn orbit(&mut self, x: f32, y: f32) {
-        self.output.scene.camera.orbit(Vec2::new(x, y));
+        self.0.orbit(x, y);
     }
 
     pub fn pan(&mut self, x: f32, y: f32) {
-        self.output.scene.camera.pan(Vec2::new(x, y));
+        self.0.pan(x, y);
     }
 
     pub fn focus(&mut self, x: f32, y: f32) -> Result<Option<String>, JsError> {
-        let Some(hit) = self
-            .output
-            .scene
-            .pick(Vec2::new(x, y), self.viewport, |index| {
-                self.output.bindings.contains_key(&index)
-            })
-        else {
-            return Ok(None);
-        };
-        match self.output.bindings.get(&hit.item) {
-            Some(Subject::Entry(id)) => {
-                // Event selection updates emphasis while preserving the user's map view.
-                let title = self
-                    .dataset
-                    .events
-                    .iter()
-                    .find(|event| &event.id == id)
-                    .map(|event| event.title.clone());
-                self.selected = Some(id.clone());
-                self.rebuild(self.output.timeline.offset)?;
-                Ok(title)
-            }
-            Some(Subject::Place(id, point)) => {
-                self.output.scene.camera.focus(*point);
-                Ok(self
-                    .dataset
-                    .events
-                    .iter()
-                    .filter_map(|event| event.place.as_ref())
-                    .find(|place| &place.id == id)
-                    .map(|place| place.name.clone()))
-            }
-            None => Ok(None),
-        }
+        Ok(self.0.focus(x, y)?)
     }
 
     pub fn zoom(&mut self, scroll: f32) {
-        self.output.scene.camera.zoom(scroll);
+        self.0.zoom(scroll);
     }
 
     pub fn scroll_timeline(&mut self, x: f32, y: f32, delta: f32) -> Result<bool, JsError> {
-        if !Vec3::new(x, y, delta).is_finite()
-            || !(-1.0..=1.0).contains(&x)
-            || !(-1.0..=1.0).contains(&y)
-            || (1.0 - y) * self.viewport.y * 0.5 < self.output.timeline.top
-        {
-            return Ok(false);
-        }
-        let offset =
-            (self.output.timeline.offset + delta).clamp(0.0, self.output.timeline.max_offset);
-        if offset != self.output.timeline.offset {
-            self.rebuild(offset)?;
-        }
-        Ok(true)
+        Ok(self.0.scroll_timeline(x, y, delta)?)
     }
 }
 
-impl WebApp {
-    fn rebuild(&mut self, timeline_offset: f32) -> Result<(), JsError> {
-        let output = composer::build(
-            &self.dataset,
-            &composer::Config {
-                selected: self.selected.as_deref(),
-                geography: &self.geography,
-                font: FONT,
-                viewport: self.viewport,
-                timeline_offset,
-            },
-        )?;
-        // Resize, selection, and timeline scrolling preserve the user's camera.
-        self.output.scene.items = output.scene.items;
-        self.output.bindings = output.bindings;
-        self.output.timeline = output.timeline;
-        Ok(())
-    }
+fn apply_style(css: &str) -> Result<(), JsError> {
+    let root = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+        .ok_or_else(|| JsError::new("Missing page document"))?;
+    root.set_attribute("style", css)
+        .map_err(|_| JsError::new("Could not apply page theme"))
 }
-
-const FONT: FontId = FontId(0);

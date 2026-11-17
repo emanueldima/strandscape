@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Strandscape</title>
     <style>
-      html, body { margin: 0; width: 100%; height: 100%; background: #101a22; }
+      :root { color-scheme: light dark; }
+      html, body { margin: 0; width: 100%; height: 100%; background: var(--page-background, Canvas); }
       canvas { display: block; width: 100%; height: 100%; }
-      #status { position: fixed; inset: 6rem 1.5rem auto; margin: 0; color: #eee0bf; font: 1rem/1.5 system-ui; pointer-events: none; }
+      #status { position: fixed; inset: 6rem 1.5rem auto; margin: 0; color: var(--status-color, CanvasText); font: 1rem/1.5 system-ui; pointer-events: none; }
     </style>
   </head>
   <body>

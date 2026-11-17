@@ -22,6 +22,7 @@ pub(crate) struct Hit {
 }
 
 pub(crate) enum Item {
+    Mesh(Mesh),
     Plane(Plane),
     Dot(Dot),
     Sphere(Sphere),
@@ -37,10 +38,16 @@ pub(crate) struct Transform {
     pub(crate) scale: Vec3,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Space {
     World,
+    Overlay,
     Hud,
+}
+
+pub(crate) struct Mesh {
+    pub(crate) triangles: Vec<[Vec3; 3]>,
+    pub(crate) color: [f32; 4],
 }
 
 pub(crate) struct Plane {
@@ -120,28 +127,31 @@ impl Scene {
 
         let ray = self.camera.ray(point, viewport.x / viewport.y)?;
 
-        self.items
-            .iter()
-            .enumerate()
-            // Ignore decorative world items before choosing the nearest surface.
-            .filter(|(index, _)| eligible(*index))
-            .filter_map(|(index, item)| {
-                item.hit(&ray, Space::World)
-                    .map(|distance| (index, distance))
+        // Match drawing priority while retaining real world coordinates for overlay hits.
+        [Space::Overlay, Space::World]
+            .into_iter()
+            .find_map(|space| {
+                self.items
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| eligible(*index))
+                    .filter_map(|(index, item)| {
+                        item.hit(&ray, space).map(|distance| (index, distance))
+                    })
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(item, distance)| Hit {
+                        item,
+                        point: ray.origin + ray.direction * distance,
+                    })
+                    .filter(|hit| hit.point.is_finite())
             })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(item, distance)| Hit {
-                item,
-                point: ray.origin + ray.direction * distance,
-            })
-            .filter(|hit| hit.point.is_finite())
     }
 }
 
 impl Item {
     fn hit(&self, ray: &Ray, space: Space) -> Option<f32> {
         let (transform, min, max) = match self {
-            Self::Tube(_) => return None,
+            Self::Mesh(_) | Self::Tube(_) => return None,
             Self::Sphere(sphere) => {
                 if space != Space::World || !sphere.radius.is_finite() || sphere.radius <= 0.0 {
                     return None;
@@ -211,6 +221,8 @@ impl Transform {
     pub(crate) fn clip_from_local(self, clip_from_world: Mat4, viewport: Vec2) -> Mat4 {
         let projection = match self.space {
             Space::World => clip_from_world,
+            // Keep world placement and perspective, but bring overlays in front of terrain.
+            Space::Overlay => Mat4::from_scale(Vec3::new(1.0, 1.0, 0.0)) * clip_from_world,
             // Depth zero keeps HUD text in front of world geometry.
             Space::Hud => Mat4::from_scale_rotation_translation(
                 Vec3::new(2.0 / viewport.x, 2.0 / viewport.y, 0.0),
@@ -252,12 +264,94 @@ mod tests {
     }
 
     #[test]
+    fn overlays_keep_projection() {
+        let viewport = Vec2::new(800.0, 600.0);
+        let mut scene = scene(Vec::new());
+        let transform = Transform {
+            space: Space::Overlay,
+            translation: Vec3::new(1.0, 0.4, 1.0),
+            rotation: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            scale: Vec3::splat(0.2),
+        };
+        for orbit in [Vec2::ZERO, Vec2::new(0.2, 0.15)] {
+            scene.camera.orbit(orbit);
+            let projection = scene
+                .camera
+                .clip_from_world(viewport.x / viewport.y)
+                .unwrap();
+            let local = Vec3::new(0.3, -0.2, 0.0);
+            let world = (projection * transform.matrix()).project_point3(local);
+            let overlay = transform
+                .clip_from_local(projection, viewport)
+                .project_point3(local);
+            assert!(overlay.truncate().abs_diff_eq(world.truncate(), TOLERANCE));
+            assert_eq!(overlay.z, 0.0);
+            assert!(world.z > overlay.z);
+        }
+    }
+
+    #[test]
+    fn picks_overlay_before_world() {
+        let viewport = Vec2::new(800.0, 600.0);
+        let mut scene = scene(vec![
+            plane(Vec3::Z * 2.0, Quat::IDENTITY, Vec3::ONE),
+            Item::Dot(Dot {
+                transform: Transform {
+                    space: Space::Overlay,
+                    translation: Vec3::ZERO,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                radius: 1.0,
+                color: [1.0, 1.0, 1.0, 0.5],
+            }),
+        ]);
+        let hit = scene.pick(Vec2::ZERO, viewport, |_| true).unwrap();
+        assert_eq!(hit.item, 1);
+        assert!(hit.point.abs_diff_eq(Vec3::ZERO, TOLERANCE));
+        assert_eq!(
+            scene
+                .pick(Vec2::ZERO, viewport, |index| index == 0)
+                .unwrap()
+                .item,
+            0
+        );
+
+        let corner = scene
+            .camera
+            .clip_from_world(viewport.x / viewport.y)
+            .unwrap()
+            .project_point3(Vec3::new(0.8, 0.8, 0.0))
+            .truncate();
+        assert_eq!(scene.pick(corner, viewport, |_| true).unwrap().item, 0);
+        let mut hud = plane(
+            Vec3::new(viewport.x * 0.5, -viewport.y * 0.5, 0.0),
+            Quat::IDENTITY,
+            Vec3::ONE,
+        );
+        let Item::Plane(ref mut pane) = hud else {
+            unreachable!()
+        };
+        pane.transform.space = Space::Hud;
+        scene.items.push(hud);
+        assert_eq!(scene.pick(Vec2::ZERO, viewport, |_| true).unwrap().item, 2);
+    }
+
+    #[test]
     fn filters_world_candidates() {
         let scene = scene(vec![
             plane(Vec3::Z * 2.0, Quat::IDENTITY, Vec3::ONE),
             Item::Sphere(Sphere {
                 center: Vec3::ZERO,
                 radius: 1.0,
+                color: [1.0; 4],
+            }),
+            Item::Mesh(Mesh {
+                triangles: vec![[
+                    Vec3::new(-1.0, -1.0, 3.0),
+                    Vec3::new(1.0, -1.0, 3.0),
+                    Vec3::new(0.0, 1.0, 3.0),
+                ]],
                 color: [1.0; 4],
             }),
         ]);
@@ -277,6 +371,11 @@ mod tests {
             1
         );
         assert!(scene.pick(Vec2::ZERO, viewport, |_| false).is_none());
+        assert!(
+            scene
+                .pick(Vec2::ZERO, viewport, |index| index == 2)
+                .is_none()
+        );
     }
 
     #[test]
@@ -376,7 +475,7 @@ mod tests {
     #[test]
     fn picks_round_dot_bounds() {
         let viewport = Vec2::new(800.0, 600.0);
-        for space in [Space::World, Space::Hud] {
+        for space in [Space::World, Space::Overlay, Space::Hud] {
             let transform = Transform {
                 space,
                 translation: if space == Space::Hud {
@@ -413,7 +512,7 @@ mod tests {
     #[test]
     fn picks_text_pane_bounds() {
         let viewport = Vec2::new(800.0, 600.0);
-        for space in [Space::World, Space::Hud] {
+        for space in [Space::World, Space::Overlay, Space::Hud] {
             for background in [None, Some([0.0; 4]), Some([1.0; 4])] {
                 let transform = Transform {
                     space,

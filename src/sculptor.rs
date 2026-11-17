@@ -1,7 +1,8 @@
 use {
     crate::{
         camera::{Camera, CameraConfig},
-        scene::{Dot, Item, Plane, Scene, SceneConfig, Space, Sphere, Text, Transform, Tube},
+        config,
+        scene::{Dot, Item, Mesh, Plane, Scene, SceneConfig, Space, Sphere, Text, Transform, Tube},
         text::{FontId, TextSpec},
     },
     glam::{Mat3, Quat, Vec2, Vec3},
@@ -44,7 +45,11 @@ pub(crate) struct Entry {
 pub(crate) struct Map {
     pub(crate) bounds: Bounds,
     pub(crate) markers: Vec<Marker>,
-    pub(crate) coastlines: Vec<[[f64; 2]; 2]>,
+    pub(crate) coastlines: Vec<[[f64; 3]; 2]>,
+    pub(crate) land: Vec<[[f64; 3]; 3]>,
+    pub(crate) lakes: Vec<[[f64; 3]; 3]>,
+    pub(crate) rivers: Vec<[[f64; 3]; 2]>,
+    pub(crate) contours: Vec<[[f64; 3]; 2]>,
 }
 
 pub(crate) struct Bounds {
@@ -60,6 +65,7 @@ pub(crate) struct Marker {
     pub(crate) label: String,
     pub(crate) latitude: f64,
     pub(crate) longitude: f64,
+    pub(crate) elevation: f64,
     pub(crate) emphasis: Emphasis,
 }
 
@@ -69,7 +75,8 @@ pub(crate) enum Emphasis {
     Selected,
 }
 
-pub(crate) struct Config {
+pub(crate) struct Config<'a> {
+    pub(crate) settings: &'a config::Config,
     pub(crate) font: FontId,
     pub(crate) viewport: Vec2,
     pub(crate) timeline_offset: f32,
@@ -81,13 +88,18 @@ pub(crate) enum BuildError {
     InvalidViewport,
 }
 
-pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output, BuildError> {
+pub(crate) fn build(composition: &Composition, config: &Config<'_>) -> Result<Output, BuildError> {
     if !config.viewport.is_finite()
         || config.viewport.min_element() <= 0.0
         || !config.timeline_offset.is_finite()
     {
         return Err(BuildError::InvalidViewport);
     }
+    let settings = config.settings;
+    let layout = &settings.layout;
+    let colors = &settings.theme.colors;
+    let opacity = &settings.theme.opacity;
+
     let mut items = Vec::new();
     let mut bindings = HashMap::new();
     text(
@@ -95,13 +107,13 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         &composition.title,
         Transform {
             space: Space::Hud,
-            translation: Vec3::new(HUD_MARGIN, -HUD_MARGIN, 0.0),
+            translation: Vec3::new(layout.timeline.margin, -layout.timeline.margin, 0.0),
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
         },
         None,
-        config.font,
-        INK,
+        config,
+        colors.ink.linear,
         None,
     );
     let floor_rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
@@ -110,7 +122,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         let cos_lat = mid_lat.to_radians().cos().max(MIN_COS_LAT);
         let longitude_span = (map.bounds.east - map.bounds.west).max(MIN_GEO_SPAN) * cos_lat;
         let latitude_span = (map.bounds.north - map.bounds.south).max(MIN_GEO_SPAN);
-        let scale = (MAP_WIDTH / longitude_span).min(MAP_DEPTH / latitude_span);
+        let scale = (layout.map.width / longitude_span).min(layout.map.depth / latitude_span);
         let projection = Projection {
             longitude: (map.bounds.west + map.bounds.east) * 0.5,
             latitude: mid_lat,
@@ -121,68 +133,142 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             (longitude_span * scale) as f32,
             (latitude_span * scale) as f32,
         );
-        plane(&mut items, Vec3::ZERO, size, floor_rotation, PANEL);
-        for step in 0..=GRID_STEPS {
-            let fraction = step as f32 / GRID_STEPS as f32 - 0.5;
-            line(
-                &mut items,
-                Vec3::new(fraction * size.x, SURFACE_OFFSET, -size.y * 0.5),
-                Vec3::new(fraction * size.x, SURFACE_OFFSET, size.y * 0.5),
-                GRID,
-                Vec3::Y,
-            );
-            line(
-                &mut items,
-                Vec3::new(-size.x * 0.5, SURFACE_OFFSET, fraction * size.y),
-                Vec3::new(size.x * 0.5, SURFACE_OFFSET, fraction * size.y),
-                GRID,
-                Vec3::Y,
-            );
+        plane(
+            &mut items,
+            Vec3::ZERO,
+            size,
+            floor_rotation,
+            colors.water.linear,
+        );
+
+        // Keep a compressed real surface; quantized face lighting batches existing meshes.
+        let elevation_scale = layout.map.terrain.elevation_scale;
+        let light = Vec3::new(-1.0, 2.0, -1.0).normalize();
+        for (triangles, color, height) in [
+            (&map.land, colors.land.linear, LAND_OFFSET),
+            (&map.lakes, colors.water.linear, LAKE_OFFSET),
+        ] {
+            let mut shades = vec![Vec::new(); SHADE_STEPS * 2 + 1];
+            for triangle in triangles {
+                let points = triangle.map(|[longitude, latitude, elevation]| {
+                    projection.project(latitude, longitude)
+                        + Vec3::Y * (elevation as f32 * elevation_scale + height)
+                });
+                let [a, b, c] = points;
+                let mut normal = (b - a).cross(c - a).normalize_or_zero();
+                if normal.y < 0.0 {
+                    normal = -normal;
+                }
+                let shade = if height == LAND_OFFSET {
+                    ((normal.dot(light) / light.y - 1.0).clamp(-1.0, 1.0) * SHADE_STEPS as f32)
+                        .round() as isize
+                } else {
+                    0
+                };
+                shades[(shade + SHADE_STEPS as isize) as usize].push(points);
+            }
+            for (shade, triangles) in shades.into_iter().enumerate() {
+                if triangles.is_empty() {
+                    continue;
+                }
+                let factor =
+                    1.0 + layout.map.terrain.shading * (shade as f32 / SHADE_STEPS as f32 - 1.0);
+                items.push(Item::Mesh(Mesh {
+                    triangles,
+                    color: [
+                        (color[0] * factor).clamp(0.0, 1.0),
+                        (color[1] * factor).clamp(0.0, 1.0),
+                        (color[2] * factor).clamp(0.0, 1.0),
+                        color[3],
+                    ],
+                }));
+            }
         }
-        // Coastlines share the event projection so map locations stay aligned.
-        for [[west, south], [east, north]] in &map.coastlines {
-            line(
-                &mut items,
-                projection.project(*south, *west) + Vec3::Y * SURFACE_OFFSET,
-                projection.project(*north, *east) + Vec3::Y * SURFACE_OFFSET,
-                COASTLINE,
-                Vec3::Y,
-            );
+
+        // All map layers share the event projection so locations stay aligned.
+        for (segments, color, width, offset) in [
+            (
+                &map.coastlines,
+                colors.coastline.linear,
+                layout.map.coastline_width,
+                SURFACE_OFFSET,
+            ),
+            (
+                &map.rivers,
+                colors.river.linear,
+                layout.map.river_width,
+                SURFACE_OFFSET,
+            ),
+            (
+                &map.contours,
+                colors.contour.linear,
+                layout.map.terrain.contour_width,
+                LAND_OFFSET + CONTOUR_OFFSET,
+            ),
+        ] {
+            for segment in segments {
+                let points = segment.map(|[longitude, latitude, elevation]| {
+                    projection.project(latitude, longitude)
+                        + Vec3::Y * (elevation as f32 * elevation_scale + offset)
+                });
+                line(&mut items, points[0], points[1], width, color, Vec3::Y);
+
+                // Coplanar endpoint disks fill outer bends and round exposed ends.
+                for point in points {
+                    items.push(Item::Dot(Dot {
+                        transform: Transform {
+                            space: Space::World,
+                            translation: point,
+                            rotation: floor_rotation,
+                            scale: Vec3::ONE,
+                        },
+                        radius: width * 0.5,
+                        color,
+                    }));
+                }
+            }
         }
         for marker in &map.markers {
-            let point =
-                projection.project(marker.latitude, marker.longitude) + Vec3::Y * SURFACE_OFFSET;
+            let point = projection.project(marker.latitude, marker.longitude)
+                + Vec3::Y * (marker.elevation as f32 * elevation_scale + SURFACE_OFFSET);
             let color = if marker.emphasis == Emphasis::Selected {
-                ACCENT
+                colors.accent.linear
             } else {
-                MUTED
+                colors.muted.linear
             };
             bindings.insert(items.len(), Target::Place(marker.id.clone(), point));
-            plane(
-                &mut items,
-                point,
-                Vec2::splat(MARKER_SIZE),
-                floor_rotation,
-                color,
-            );
-            // Name each place on the map rather than repeating it on event labels.
+            items.push(Item::Dot(Dot {
+                transform: Transform {
+                    space: Space::Overlay,
+                    translation: point,
+                    rotation: floor_rotation,
+                    scale: Vec3::ONE,
+                },
+                radius: layout.map.marker_size * 0.5,
+                color: [color[0], color[1], color[2], color[3] * opacity.places],
+            }));
+            // Keep names close to the right of their discs, visible above the terrain.
             bindings.insert(items.len(), Target::Place(marker.id.clone(), point));
             text(
                 &mut items,
                 &marker.label,
                 Transform {
-                    space: Space::World,
+                    space: Space::Overlay,
                     translation: point
-                        + Vec3::new(MARKER_SIZE * 0.5 + LABEL_GAP, SURFACE_OFFSET, 0.0),
+                        + Vec3::new(
+                            layout.map.marker_size * 0.5 + layout.text.label_gap,
+                            SURFACE_OFFSET,
+                            -layout.map.marker_size * 0.5,
+                        ),
                     rotation: floor_rotation,
-                    scale: Vec3::splat(TEXT_SCALE),
+                    scale: Vec3::splat(layout.text.scale),
                 },
                 None,
-                config.font,
+                config,
                 if marker.emphasis == Emphasis::Selected {
                     color
                 } else {
-                    [color[0], color[1], color[2], LABEL_OPACITY]
+                    [color[0], color[1], color[2], opacity.labels]
                 },
                 Some([0.0; 4]),
             );
@@ -195,33 +281,38 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         (composition.strand.last().map_or(start, |entry| entry.time) - start).max(MIN_TIME_SPAN);
     let mut previous = None;
     for entry in &composition.strand {
-        let height = HEIGHT_BASE + ((entry.time - start) / span) as f32 * HEIGHT_SPAN;
+        let height = layout.events.height_base
+            + ((entry.time - start) / span) as f32 * layout.events.height_span;
         let ground = entry
             .place
             .as_ref()
             .zip(projection.as_ref())
-            .map(|(place, projection)| projection.project(place.latitude, place.longitude));
+            .map(|(place, projection)| {
+                projection.project(place.latitude, place.longitude)
+                    + Vec3::Y * (place.elevation as f32 * layout.map.terrain.elevation_scale)
+            });
         let color = if entry.emphasis == Emphasis::Selected {
-            SELECTED_EVENT
+            colors.selected_event.linear
         } else {
-            INK
+            colors.event.linear
         };
         let Some(ground) = ground else {
             // Keep unknown events on the HUD while joining the surrounding located dots.
             continue;
         };
-        let point = ground + Vec3::Y * height;
-        tube(&mut items, ground, point, GRID);
+        // Terrain moves the stem's foot; event height continues to encode only time.
+        let point = Vec3::new(ground.x, height, ground.z);
+        tube(&mut items, ground, point, colors.stem.linear, settings);
         if let Some(previous) = previous {
-            tube(&mut items, previous, point, ACCENT);
+            tube(&mut items, previous, point, colors.accent.linear, settings);
         }
         previous = Some(point);
         bindings.insert(items.len(), Target::Entry(entry.id.clone()));
         items.push(Item::Sphere(Sphere {
             center: point,
-            radius: EVENT_RADIUS
+            radius: layout.events.radius
                 * if entry.emphasis == Emphasis::Selected {
-                    SELECTED_SCALE
+                    layout.selected_scale
                 } else {
                     1.0
                 },
@@ -230,12 +321,13 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
     }
 
     // Reserve space beyond the last dot for its angled label.
-    let width = (config.viewport.x - HUD_MARGIN * 2.0 - HUD_LABEL_ROOM).max(0.0);
-    let positions = timeline_positions(&composition.strand, width);
+    let width =
+        (config.viewport.x - layout.timeline.margin * 2.0 - layout.timeline.label_room).max(0.0);
+    let positions = timeline_positions(&composition.strand, width, &layout.timeline);
     let max_offset = (positions.last().copied().unwrap_or(0.0) - width).max(0.0);
     let offset = config.timeline_offset.clamp(0.0, max_offset);
-    let baseline = -config.viewport.y + HUD_MARGIN;
-    let top = (config.viewport.y - HUD_TIMELINE_HEIGHT).max(0.0);
+    let baseline = -config.viewport.y + layout.timeline.margin;
+    let top = (config.viewport.y - layout.timeline.height).max(0.0);
     // Empty timeline clicks must not select the world beneath the HUD.
     items.push(Item::Plane(Plane {
         transform: Transform {
@@ -256,12 +348,12 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         items.push(Item::Plane(Plane {
             transform: Transform {
                 space: Space::Hud,
-                translation: Vec3::new(HUD_MARGIN + line_width * 0.5, baseline, 0.0),
+                translation: Vec3::new(layout.timeline.margin + line_width * 0.5, baseline, 0.0),
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
-            size: Vec2::new(line_width, 2.0),
-            color: MUTED,
+            size: Vec2::new(line_width, layout.timeline.line_width),
+            color: colors.muted.linear,
         }));
     }
     for (entry, x) in composition.strand.iter().zip(positions) {
@@ -269,7 +361,7 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         if x < 0.0 || x > width {
             continue;
         }
-        let position = Vec3::new(HUD_MARGIN + x, baseline, 0.0);
+        let position = Vec3::new(layout.timeline.margin + x, baseline, 0.0);
         bindings.insert(items.len(), Target::Entry(entry.id.clone()));
         items.push(Item::Dot(Dot {
             transform: Transform {
@@ -278,16 +370,16 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
-            radius: HUD_DOT_RADIUS
+            radius: layout.timeline.dot_radius
                 * if entry.emphasis == Emphasis::Selected {
-                    SELECTED_SCALE
+                    layout.selected_scale
                 } else {
                     1.0
                 },
             color: if entry.emphasis == Emphasis::Selected {
-                SELECTED_EVENT
+                colors.selected_event.linear
             } else {
-                INK
+                colors.event.linear
             },
         }));
         // Keep small dots easy to select without changing their visible spacing.
@@ -299,12 +391,12 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
-            size: Vec2::splat(HUD_MIN_GAP),
+            size: Vec2::splat(layout.timeline.min_gap),
             color: [0.0; 4],
         }));
         let label = format!("{} · {}", entry.date, entry.label);
         let mut chars = label.chars();
-        let mut content: String = chars.by_ref().take(HUD_LABEL_LIMIT).collect();
+        let mut content: String = chars.by_ref().take(layout.timeline.label_limit).collect();
         if chars.next().is_some() {
             content.pop();
             content.push('…');
@@ -313,21 +405,21 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
         items.push(Item::Text(Text {
             transform: Transform {
                 space: Space::Hud,
-                translation: position + Vec3::Y * HUD_MIN_GAP,
-                rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+                translation: position + Vec3::Y * layout.timeline.min_gap,
+                rotation: Quat::from_rotation_z(layout.timeline.label_angle.to_radians()),
                 scale: Vec3::ONE,
             },
             spec: TextSpec {
                 content,
                 font: config.font,
-                size: HUD_LABEL_SIZE,
+                size: layout.timeline.label_size,
                 max_width: None,
             },
             // Keep the selected label visible and match its highlighted dot.
             color: if entry.emphasis == Emphasis::Selected {
-                SELECTED_EVENT
+                colors.selected_event.linear
             } else {
-                MUTED
+                colors.muted.linear
             },
             background: Some([0.0; 4]),
             layout: None,
@@ -354,17 +446,17 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
             Transform {
                 space: Space::Hud,
                 translation: Vec3::new(
-                    HUD_MARGIN,
-                    baseline + HUD_TIMELINE_HEIGHT - HUD_LINE_HEIGHT,
+                    layout.timeline.margin,
+                    baseline + layout.timeline.height - layout.timeline.line_height,
                     0.0,
                 ),
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
             None,
-            config.font,
-            ACCENT,
-            Some(PANEL),
+            config,
+            colors.accent.linear,
+            Some(colors.panel.linear),
         );
     }
 
@@ -378,18 +470,19 @@ pub(crate) fn build(composition: &Composition, config: &Config) -> Result<Output
                 let corner = projection.project(map.bounds.south, map.bounds.east);
                 Vec2::new(corner.x, corner.z)
             });
-    let fov = 45.0_f32.to_radians();
+    let fov = layout.field_of_view.to_radians();
     let focal_length = config.viewport.y / (2.0 * (fov * 0.5).tan());
-    let map_top = HUD_MARGIN + HUD_LINE_HEIGHT;
-    let map_bottom = (top - HUD_MARGIN).max(map_top + 1.0);
+    let map_top = layout.timeline.margin + layout.timeline.line_height;
+    let map_bottom = (top - layout.timeline.margin).max(map_top + 1.0);
     let top_slope = (config.viewport.y * 0.5 - map_top) / focal_length;
     let bottom_slope = (map_bottom - config.viewport.y * 0.5) / focal_length;
-    let height = HEIGHT_BASE + HEIGHT_SPAN;
+    let height = layout.events.height_base + layout.events.height_span;
     let bottom_height = if bottom_slope >= 0.0 { height } else { 0.0 };
     let distance = ((2.0 * half_size.y + top_slope * height + bottom_slope * bottom_height)
         / (top_slope + bottom_slope))
         .max(
-            half_size.x * 2.0 * focal_length / (config.viewport.x - 2.0 * HUD_MARGIN).max(1.0)
+            half_size.x * 2.0 * focal_length
+                / (config.viewport.x - 2.0 * layout.timeline.margin).max(1.0)
                 + height,
         );
     let north = top_slope * (distance - height) - half_size.y;
@@ -431,41 +524,17 @@ impl Projection {
     }
 }
 
-const PANEL: [f32; 4] = [0.035, 0.10, 0.13, 1.0];
-const INK: [f32; 4] = [0.91, 0.84, 0.66, 1.0];
-const MUTED: [f32; 4] = [0.42, 0.61, 0.64, 1.0];
-const ACCENT: [f32; 4] = [1.0, 0.72, 0.30, 1.0];
-const SELECTED_EVENT: [f32; 4] = [1.0, 0.15, 0.15, 1.0];
-const GRID: [f32; 4] = [0.055, 0.16, 0.19, 1.0];
-const COASTLINE: [f32; 4] = [0.25, 0.43, 0.39, 1.0];
-const MAP_WIDTH: f64 = 14.0;
-const MAP_DEPTH: f64 = 8.0;
-const GRID_STEPS: usize = 6;
 const MIN_COS_LAT: f64 = 0.01;
 const MIN_GEO_SPAN: f64 = 0.001;
 const MIN_TIME_SPAN: f64 = 1.0;
-const HEIGHT_BASE: f32 = 0.7;
-const HEIGHT_SPAN: f32 = 0.9;
+const LAND_OFFSET: f32 = 0.005;
+const LAKE_OFFSET: f32 = 0.01;
 const SURFACE_OFFSET: f32 = 0.015;
-const MARKER_SIZE: f32 = 0.16;
-const EVENT_RADIUS: f32 = 0.04;
-const SELECTED_SCALE: f32 = 1.5;
-const LINE_WIDTH: f32 = 0.025;
-const TUBE_OPACITY: f32 = 0.5;
-const TEXT_SCALE: f32 = 0.009;
-const LABEL_GAP: f32 = 0.2;
-const LABEL_OPACITY: f32 = 0.5;
-const HUD_MARGIN: f32 = 24.0;
-const HUD_LINE_HEIGHT: f32 = 28.0;
-const HUD_DOT_RADIUS: f32 = 4.0;
-const HUD_MIN_GAP: f32 = 24.0;
-const HUD_TIMELINE_HEIGHT: f32 = 224.0;
-const HUD_LABEL_SIZE: f32 = 12.0;
-const HUD_LABEL_LIMIT: usize = 28;
-const HUD_LABEL_ROOM: f32 = 160.0;
+const CONTOUR_OFFSET: f32 = 0.001;
+const SHADE_STEPS: usize = 32;
 const LAYOUT_STEPS: usize = 32;
 
-fn timeline_positions(entries: &[Entry], width: f32) -> Vec<f32> {
+fn timeline_positions(entries: &[Entry], width: f32, style: &config::Timeline) -> Vec<f32> {
     let Some(first) = entries.first() else {
         return Vec::new();
     };
@@ -474,14 +543,14 @@ fn timeline_positions(entries: &[Entry], width: f32) -> Vec<f32> {
 
     // Preserve proportional time gaps; clamp only crowded gaps to the minimum.
     // When they cannot fit, retain that scale and let the timeline scroll.
-    if entries.len().saturating_sub(1) as f32 * HUD_MIN_GAP <= width {
+    if entries.len().saturating_sub(1) as f32 * style.min_gap <= width {
         let mut low = 0.0;
         let mut high = scale;
         for _ in 0..LAYOUT_STEPS {
             scale = (low + high) * 0.5;
             let length: f64 = entries
                 .windows(2)
-                .map(|pair| ((pair[1].time - pair[0].time) * scale).max(HUD_MIN_GAP as f64))
+                .map(|pair| ((pair[1].time - pair[0].time) * scale).max(style.min_gap as f64))
                 .sum();
             if length > width as f64 {
                 high = scale;
@@ -494,7 +563,7 @@ fn timeline_positions(entries: &[Entry], width: f32) -> Vec<f32> {
     let mut positions = vec![0.0];
     let mut x = 0.0;
     for pair in entries.windows(2) {
-        x += ((pair[1].time - pair[0].time) * scale).max(HUD_MIN_GAP as f64);
+        x += ((pair[1].time - pair[0].time) * scale).max(style.min_gap as f64);
         positions.push(x as f32);
     }
     positions
@@ -513,7 +582,7 @@ fn plane(items: &mut Vec<Item>, position: Vec3, size: Vec2, rotation: Quat, colo
     }));
 }
 
-fn line(items: &mut Vec<Item>, start: Vec3, end: Vec3, color: [f32; 4], normal: Vec3) {
+fn line(items: &mut Vec<Item>, start: Vec3, end: Vec3, width: f32, color: [f32; 4], normal: Vec3) {
     let delta = end - start;
     let length = delta.length();
     if length <= f32::EPSILON {
@@ -528,13 +597,13 @@ fn line(items: &mut Vec<Item>, start: Vec3, end: Vec3, color: [f32; 4], normal: 
     plane(
         items,
         (start + end) * 0.5,
-        Vec2::new(length, LINE_WIDTH),
+        Vec2::new(length, width),
         Quat::from_mat3(&Mat3::from_cols(x, y, x.cross(y))),
         color,
     );
 }
 
-fn tube(items: &mut Vec<Item>, start: Vec3, end: Vec3, color: [f32; 4]) {
+fn tube(items: &mut Vec<Item>, start: Vec3, end: Vec3, color: [f32; 4], settings: &config::Config) {
     if start.distance_squared(end) <= f32::EPSILON * f32::EPSILON {
         return;
     }
@@ -543,8 +612,13 @@ fn tube(items: &mut Vec<Item>, start: Vec3, end: Vec3, color: [f32; 4]) {
     items.push(Item::Tube(Tube {
         start,
         end,
-        radius: LINE_WIDTH * 0.5,
-        color: [color[0], color[1], color[2], color[3] * TUBE_OPACITY],
+        radius: settings.layout.line_width * 0.5,
+        color: [
+            color[0],
+            color[1],
+            color[2],
+            color[3] * settings.theme.opacity.tubes,
+        ],
     }));
 }
 
@@ -553,7 +627,7 @@ fn text(
     content: &str,
     transform: Transform,
     width: Option<f32>,
-    font: FontId,
+    config: &Config<'_>,
     color: [f32; 4],
     background: Option<[f32; 4]>,
 ) {
@@ -561,9 +635,9 @@ fn text(
         transform,
         spec: TextSpec {
             content: content.into(),
-            font,
-            size: 20.0,
-            max_width: width.map(|width| width / TEXT_SCALE),
+            font: config.font,
+            size: config.settings.layout.text.size,
+            max_width: width.map(|width| width / config.settings.layout.text.scale),
         },
         color,
         background,
@@ -576,7 +650,105 @@ mod tests {
     use super::*;
 
     #[test]
+    fn map_layers_round_and_align() {
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let layout = &settings.layout;
+        let colors = &settings.theme.colors;
+        assert_eq!(layout.map.coastline_width, layout.line_width * 0.5);
+
+        let viewport = Vec2::new(800.0, 600.0);
+        let output = build(
+            &Composition {
+                title: String::new(),
+                strand: Vec::new(),
+                map: Some(Map {
+                    bounds: Bounds {
+                        west: -1.0,
+                        east: 1.0,
+                        south: -1.0,
+                        north: 1.0,
+                    },
+                    markers: Vec::new(),
+                    coastlines: vec![
+                        [[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                        [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    ],
+                    land: vec![[[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],
+                    lakes: vec![[[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],
+                    rivers: vec![
+                        [[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                        [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    ],
+                    contours: Vec::new(),
+                }),
+            },
+            &Config {
+                settings: &settings,
+                font: FontId(0),
+                viewport,
+                timeline_offset: 0.0,
+            },
+        )
+        .unwrap();
+        let clip_from_world = output
+            .scene
+            .camera
+            .clip_from_world(viewport.x / viewport.y)
+            .unwrap();
+
+        // Cover the outer bend without extending into the corner of a square join.
+        for (color, width) in [
+            (colors.coastline.linear, layout.map.coastline_width),
+            (colors.river.linear, layout.map.river_width),
+        ] {
+            for (offset, covered) in [(0.3, true), (0.45, false)] {
+                let point = Vec3::new(offset * width, SURFACE_OFFSET, offset * width);
+                let hit = output.scene.pick(
+                    clip_from_world.project_point3(point).truncate(),
+                    viewport,
+                    |index| match &output.scene.items[index] {
+                        Item::Plane(plane) => plane.color == color,
+                        Item::Dot(dot) => dot.color == color,
+                        _ => false,
+                    },
+                );
+                assert_eq!(hit.is_some(), covered, "map line coverage at {point:?}");
+            }
+        }
+
+        let fills: Vec<_> = output
+            .scene
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let Item::Mesh(mesh) = item else { return None };
+                assert!(!output.bindings.contains_key(&index));
+                Some(mesh)
+            })
+            .collect();
+        assert_eq!(fills.len(), 2);
+        for (fill, (height, color)) in fills.iter().zip([
+            (LAND_OFFSET, colors.land.linear),
+            (LAKE_OFFSET, colors.water.linear),
+        ]) {
+            assert_eq!(fill.color, color);
+            assert_eq!(
+                fill.triangles,
+                [[
+                    Vec3::new(-4.0, height, 0.0),
+                    Vec3::new(0.0, height, 0.0),
+                    Vec3::new(0.0, height, -4.0),
+                ]]
+            );
+        }
+    }
+
+    #[test]
     fn timeline_preserves_time_and_gap() {
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let layout = &settings.layout;
+
         let entries: Vec<_> = [0.0, 0.0, 0.01, 1.0, 10.0, 40.0]
             .into_iter()
             .map(|time| Entry {
@@ -589,11 +761,14 @@ mod tests {
             })
             .collect();
         for width in [1000.0, 200.0, 64.0] {
-            let positions = timeline_positions(&entries, width);
+            let positions = timeline_positions(&entries, width, &layout.timeline);
             let gaps: Vec<_> = positions.windows(2).map(|pair| pair[1] - pair[0]).collect();
             assert_eq!(positions.len(), entries.len());
-            assert!(gaps.iter().all(|gap| *gap >= HUD_MIN_GAP - 0.001));
-            assert!((gaps[0] - HUD_MIN_GAP).abs() < 0.001);
+            assert!(
+                gaps.iter()
+                    .all(|gap| *gap >= layout.timeline.min_gap - 0.001)
+            );
+            assert!((gaps[0] - layout.timeline.min_gap).abs() < 0.001);
             if width >= 200.0 {
                 assert!((positions.last().unwrap() - width).abs() < 0.001);
                 assert!((gaps[4] / gaps[3] - 30.0 / 9.0).abs() < 0.001);
@@ -602,18 +777,30 @@ mod tests {
                 assert!(gaps[4] > gaps[3]);
             }
         }
-        assert!(timeline_positions(&[], 100.0).is_empty());
-        assert_eq!(timeline_positions(&entries[..1], 100.0), [0.0]);
-        assert_eq!(timeline_positions(&entries[..2], 100.0), [0.0, HUD_MIN_GAP]);
+        assert!(timeline_positions(&[], 100.0, &layout.timeline).is_empty());
+        assert_eq!(
+            timeline_positions(&entries[..1], 100.0, &layout.timeline),
+            [0.0]
+        );
+        assert_eq!(
+            timeline_positions(&entries[..2], 100.0, &layout.timeline),
+            [0.0, layout.timeline.min_gap]
+        );
     }
 
     #[test]
     fn time_separates_same_place() {
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let layout = &settings.layout;
+        let colors = &settings.theme.colors;
+        let opacity = &settings.theme.opacity;
+
         let place = Marker {
             id: "bern".into(),
             label: "Bern".into(),
             latitude: 46.95,
             longitude: 7.45,
+            elevation: 0.0,
             emphasis: Emphasis::Normal,
         };
         let mut composition = Composition {
@@ -638,11 +825,16 @@ mod tests {
                 },
                 markers: vec![place],
                 coastlines: Vec::new(),
+                land: Vec::new(),
+                lakes: Vec::new(),
+                rivers: Vec::new(),
+                contours: Vec::new(),
             }),
         };
         let output = build(
             &composition,
             &Config {
+                settings: &settings,
                 font: FontId(0),
                 viewport: Vec2::new(800.0, 500.0),
                 timeline_offset: 0.0,
@@ -678,7 +870,7 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Tube(tube) if tube.color[..3] == ACCENT[..3] => Some(tube),
+                Item::Tube(tube) if tube.color[..3] == colors.accent.linear[..3] => Some(tube),
                 _ => None,
             })
             .collect();
@@ -686,8 +878,8 @@ mod tests {
         for (segment, pair) in segments.iter().zip(points.windows(2)) {
             assert!(segment.start.abs_diff_eq(pair[0], 0.001));
             assert!(segment.end.abs_diff_eq(pair[1], 0.001));
-            assert_eq!(segment.radius, LINE_WIDTH * 0.5);
-            assert_eq!(segment.color[3], TUBE_OPACITY);
+            assert_eq!(segment.radius, layout.line_width * 0.5);
+            assert_eq!(segment.color[3], opacity.tubes);
         }
 
         let stems: Vec<_> = output
@@ -698,20 +890,21 @@ mod tests {
             .filter_map(|(index, item)| {
                 let Item::Tube(tube) = item else { return None };
                 assert!(!output.bindings.contains_key(&index));
-                (tube.color[..3] == GRID[..3]).then_some(tube)
+                (tube.color[..3] == colors.stem.linear[..3]).then_some(tube)
             })
             .collect();
         assert_eq!(stems.len(), points.len());
         for (stem, point) in stems.iter().zip(&points) {
             assert_eq!(stem.start, Vec3::new(point.x, 0.0, point.z));
             assert_eq!(stem.end, *point);
-            assert_eq!(stem.color[3], TUBE_OPACITY);
+            assert_eq!(stem.color[3], opacity.tubes);
         }
 
         composition.strand[1].place = None;
         let output = build(
             &composition,
             &Config {
+                settings: &settings,
                 font: FontId(0),
                 viewport: Vec2::new(800.0, 500.0),
                 timeline_offset: 0.0,
@@ -723,7 +916,7 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Tube(tube) if tube.color[..3] == ACCENT[..3] => Some(tube),
+                Item::Tube(tube) if tube.color[..3] == colors.accent.linear[..3] => Some(tube),
                 _ => None,
             })
             .collect();
@@ -735,6 +928,8 @@ mod tests {
 
     #[test]
     fn selected_unknown_stays_on_hud() {
+        let settings = config::load(config::Kind::Dark).unwrap();
+
         let composition = Composition {
             title: "Example".into(),
             map: None,
@@ -750,6 +945,7 @@ mod tests {
         let output = build(
             &composition,
             &Config {
+                settings: &settings,
                 font: FontId(0),
                 viewport: Vec2::new(800.0, 500.0),
                 timeline_offset: 0.0,

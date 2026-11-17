@@ -2,6 +2,35 @@
 
 ## 2026-11-17
 
+- Request: halve coastline thickness, use translucent place discs, bring names closer on their right, and keep places/names above elevations.
+- Added a world-positioned overlay layer with matching picking priority. Renderer draws world, alpha-blended places/names, then HUD; text batches follow the same layer order. Coastlines now have independent half-width configuration, place discs use 50% theme opacity, and label spacing is reduced. Added styling, projection, layering, and picking regressions.
+
+- Request: add subtle, real 3D terrain and thin 1 km elevation contours, without a toggle.
+- Added a bundled global elevation grid and reproducible NetCDF conversion tool. New `geography::terrain` builds coastline-clipped relief, drapes map layers, and extracts contours from the same triangles. Geography caches the last bounds/interval for scene rebuilds. Composer carries elevations; sculptor batches shaded meshes through the existing renderer and anchors places/stems to terrain while preserving time-only event heights. Added configuration/theme controls and geometry, contour, and integration checks.
+
+- Request: keep selected light-theme events red and make all ordinary event dots blue.
+- Added a separate event palette color for 3D and timeline dots, preserving text and dark-theme colors. Restored red selection and added a failing-then-passing regression.
+
+- Request: make light-theme event dots blue.
+- Changed selected event dots and their matching timeline label to blue (#2563eb) in the light theme. APIs unchanged.
+
+- Request: remove build.rs.
+- Replaced generated theme discovery with explicit dark/light JSON includes in config::theme; removed the build script and updated configuration documentation.
+
+- Request: introduce JSON dark/light themes and general configuration under root `config/`, selected by browser preference through a thin web bridge.
+- Added config loaders, named defaults, hex color conversion, validation, and build-time embedding of all theme files. Moved shared layout/sizing out of sculptor and opacity/colors into theme JSON; retained numerical safeguards and depth offsets.
+- Moved application orchestration from web to app. Browser preference changes rebuild styled primitives and update page/canvas colors while preserving camera and selection. Added configuration, color, theme geometry, and layout regressions.
+
+- Request: add land fill, lakes, and major rivers.
+- Bundled matching Natural Earth v5.1.2 1:110m layers; geography now parses named sources, triangulates polygon holes once with earcutr, and clips fills and lines to map bounds.
+- Composer passes layers to sculptor; new decorative scene meshes reuse the existing triangle pipeline. Added muted land, ocean-colored lakes, and thinner blue rivers with round joins, plus geometry and layer regressions.
+
+- Request: remove the map grid.
+- Removed grid-line construction and its interval constant from sculptor. APIs unchanged.
+
+- Request: round coastline joins.
+- Added coplanar endpoint disks using existing scene dots to fill corner gaps and round exposed ends. APIs unchanged; added a coastline coverage regression.
+
 - Request: make the tubes semitransparent.
 - Set event connections and vertical stems to 50% opacity. Enabled alpha blending without depth writes, sorted tubes back-to-front each frame, and drew opaque spheres first. APIs unchanged.
 

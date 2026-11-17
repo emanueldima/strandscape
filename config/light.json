@@ -1,0 +1,25 @@
+{
+  "kind": "light",
+  "colors": {
+    "background": "#f5f3ef",
+    "page": "#f5f3ef",
+    "status": "#202b35",
+    "panel": "#ffffff",
+    "water": "#dcecf3",
+    "ink": "#202b35",
+    "muted": "#60717b",
+    "accent": "#945209",
+    "event": "#2563eb",
+    "selected_event": "#d92727",
+    "stem": "#8c9699",
+    "coastline": "#667b6c",
+    "land": "#e5ecda",
+    "river": "#6698b0",
+    "contour": "#a1ae94"
+  },
+  "opacity": {
+    "tubes": 0.5,
+    "labels": 0.7,
+    "places": 0.5
+  }
+}

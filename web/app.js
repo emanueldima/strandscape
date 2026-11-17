@@ -19,7 +19,9 @@ async function run() {
     let viewport = measure(canvas);
     canvas.width = viewport[0];
     canvas.height = viewport[1];
-    const app = await WebApp.create(canvas, bytes, ...viewport);
+    const themeQuery = matchMedia('(prefers-color-scheme: dark)');
+    const app = await WebApp.create(canvas, bytes, ...viewport,
+      themeQuery.matches ? 'dark' : 'light');
     app.draw();
     status.hidden = true;
 
@@ -44,6 +46,15 @@ async function run() {
       if (frame !== null) return;
       frame = requestAnimationFrame(draw);
     }
+
+    themeQuery.addEventListener('change', (event) => {
+      try {
+        app.set_theme(event.matches ? 'dark' : 'light');
+        requestDraw();
+      } catch (error) {
+        report(error);
+      }
+    });
 
     const dragThreshold = 3;
     let pointer = null;

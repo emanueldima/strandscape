@@ -1,9 +1,13 @@
 #![cfg_attr(test, allow(dead_code))]
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod app;
+#[cfg(any(target_arch = "wasm32", test))]
 mod camera;
 #[cfg(any(target_arch = "wasm32", test))]
 mod composer;
+#[cfg(any(target_arch = "wasm32", test))]
+mod config;
 #[cfg(any(target_arch = "wasm32", test))]
 mod events;
 #[cfg(any(target_arch = "wasm32", test))]

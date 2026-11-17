@@ -1,8 +1,9 @@
 use {
     super::{
-        DrawList, PlaneVertex, RenderConfig, RenderError, Viewport, sphere::SphereRenderer,
+        DrawList, Layer, PlaneVertex, RenderConfig, RenderError, Viewport, sphere::SphereRenderer,
         text::TextRenderer, tube::TubeRenderer,
     },
+    std::ops::Range,
     wgpu::util::DeviceExt,
 };
 
@@ -15,6 +16,7 @@ pub(super) struct Gpu {
     viewport: Viewport,
     depth: wgpu::TextureView,
     plane_pipeline: wgpu::RenderPipeline,
+    overlay_pipeline: wgpu::RenderPipeline,
     spheres: SphereRenderer,
     tubes: TubeRenderer,
     text: TextRenderer,
@@ -66,40 +68,47 @@ impl Gpu {
             label: Some("Plane"),
             source: wgpu::ShaderSource::Wgsl(include_str!("plane.wgsl").into()),
         });
-        let plane_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Plane"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<PlaneVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: Default::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
+        let [plane_pipeline, overlay_pipeline] = [Layer::World, Layer::Overlay].map(|space| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Plane"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<PlaneVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: (space == Layer::Overlay)
+                            .then_some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(space == Layer::World),
+                    depth_compare: Some(if space == Layer::World {
+                        wgpu::CompareFunction::LessEqual
+                    } else {
+                        wgpu::CompareFunction::Always
+                    }),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
         });
         let text = TextRenderer::new(&device, &queue, color_format, DEPTH_FORMAT);
         let spheres = SphereRenderer::new(&device, color_format, DEPTH_FORMAT);
@@ -114,6 +123,7 @@ impl Gpu {
             viewport,
             depth,
             plane_pipeline,
+            overlay_pipeline,
             spheres,
             tubes,
             text,
@@ -145,11 +155,18 @@ impl Gpu {
             .prepare(&self.device, &self.queue, &list.spheres, &list.world_view);
         self.tubes
             .prepare(&self.device, &self.queue, &list.tubes, &list.world_view);
+        let mut end = 0;
+        let ranges = list.planes.each_ref().map(|vertices| {
+            let start = end;
+            end += vertices.len() as u32;
+            start..end
+        });
+        let vertices: Vec<_> = list.planes.iter().flatten().copied().collect();
         let plane_vertices = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Plane vertices"),
-                contents: bytemuck::cast_slice(&list.planes),
+                contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
@@ -179,15 +196,32 @@ impl Gpu {
                 }),
                 ..Default::default()
             });
-            if !list.planes.is_empty() {
-                pass.set_pipeline(&self.plane_pipeline);
-                pass.set_vertex_buffer(0, plane_vertices.slice(..));
-                pass.draw(0..list.planes.len() as u32, 0..1);
-            }
+            self.draw_planes(
+                &mut pass,
+                &plane_vertices,
+                ranges[Layer::World as usize].clone(),
+                Layer::World,
+            );
             self.spheres.draw(&mut pass);
             // Blend tubes over opaque geometry without blocking later transparent tubes.
             self.tubes.draw(&mut pass);
-            self.text.draw(&mut pass);
+            self.text.draw(&mut pass, Layer::World);
+
+            // Alpha-blend places above the world, then cover them with the HUD.
+            self.draw_planes(
+                &mut pass,
+                &plane_vertices,
+                ranges[Layer::Overlay as usize].clone(),
+                Layer::Overlay,
+            );
+            self.text.draw(&mut pass, Layer::Overlay);
+            self.draw_planes(
+                &mut pass,
+                &plane_vertices,
+                ranges[Layer::Hud as usize].clone(),
+                Layer::Hud,
+            );
+            self.text.draw(&mut pass, Layer::Hud);
         }
         self.queue.submit([encoder.finish()]);
         frame.present();
@@ -204,6 +238,30 @@ impl Gpu {
         self.config.height = viewport.height;
         self.surface.configure(&self.device, &self.config);
         self.depth = create_depth(&self.device, viewport.width, viewport.height);
+    }
+
+    pub(super) fn set_background(&mut self, color: [f64; 4]) {
+        let [r, g, b, a] = color;
+        self.clear_color = wgpu::Color { r, g, b, a };
+    }
+
+    fn draw_planes(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        vertices: &wgpu::Buffer,
+        range: Range<u32>,
+        space: Layer,
+    ) {
+        if range.is_empty() {
+            return;
+        }
+        pass.set_pipeline(if space == Layer::World {
+            &self.plane_pipeline
+        } else {
+            &self.overlay_pipeline
+        });
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.draw(range, 0..1);
     }
 }
 

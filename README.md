@@ -23,8 +23,12 @@ Information from multiple sources can be explored together, with its origins pre
 
 | Module | Responsibility |
 | --- | --- |
+| `app` | Own application state, configuration, input actions, and scene rebuilds. |
+| `config` | Load shared layout settings and named dark/light themes from bundled JSON. |
+| `config::theme` | Validate theme types, colors, and opacity; convert sRGB hex to linear RGB. |
 | `events` | Parse and validate event data. |
-| `geography` | Parse coastline GeoJSON and clip paths to geographic bounds. |
+| `geography` | Parse geographic layers, triangulate polygons, and clip fills and lines to bounds. |
+| `geography::terrain` | Read elevation grids, build relief, drape geographic layers, and extract contours. |
 | `composer` | Infer map context and compose event strands. |
 | `sculptor` | Translate compositions into scene primitives. |
 | `scene` | World/HUD primitives and hit testing. |
@@ -34,21 +38,22 @@ Information from multiple sources can be explored together, with its origins pre
 | `render::gpu` | Manage wgpu resources and frame submission. |
 | `render::sphere` | Build billboard quads and render shaded sphere surfaces with depth. |
 | `render::text` | Maintain the glyph atlas and draw text. |
-| `web` | Expose the application through Wasm. |
-| `web/app.js` | Download fonts, handle input, and schedule redraws. |
+| `web` | Adapt browser values to the application through a thin Wasm bridge. |
+| `web/app.js` | Download fonts, forward browser theme preference and input, and schedule redraws. |
 
 The example embeds `data/einstein.json`. Scene construction and rendering are separate calls:
 
 ```text
 web/app.js
-├── WebApp::create(...)
+├── WebApp::create(...) → app::App::create(...)
+│   ├── config::load(browser preference) → layout + named theme
 │   ├── events::Dataset::parse(json) → Dataset
-│   ├── geography::Dataset::parse(geojson) → geography
+│   ├── geography::Dataset::parse(sources) → geography
 │   └── composer::build(dataset, config) → scene + selection bindings
-│       ├── geography::build(geography, bounds) → coastline segments
+│       ├── geography::build(geography, bounds) → clipped fills and line segments
 │       └── sculptor::build(composition, config)
 │           └── scene::Scene::new(config)
-└── WebApp::draw()
+└── WebApp::draw() → app::App::draw()
     └── render::Renderer::draw(scene)
         ├── camera::Camera::clip_from_world(...)
         ├── scene::Transform::clip_from_local(...) → world or HUD projection
@@ -59,13 +64,47 @@ web/app.js
 ```
 
 The current experiment uses one map with a chronological polyline above it.
-Its physical baseline uses bundled present-day coastlines from
+Its physical baseline uses bundled present-day coastlines, land, lakes, and major rivers from
 [Natural Earth 1:110m](https://www.naturalearthdata.com/downloads/110m-physical-vectors/),
-[release v5.1.2](https://github.com/nvkelso/natural-earth-vector/blob/v5.1.2/geojson/ne_110m_coastline.geojson).
+[release v5.1.2](https://github.com/nvkelso/natural-earth-vector/tree/v5.1.2/geojson).
 The data is [public domain](https://www.naturalearthdata.com/about/terms-of-use/)
-and stored unchanged in `data/coastlines.geojson`. No modern political borders or
-background settlements are included. These coastlines are a baseline, not a
-reconstruction of historical shorelines.
+and stored unchanged in `data/coastlines.geojson`, `data/land.geojson`,
+`data/lakes.geojson`, and `data/rivers.geojson` (upstream `ne_110m_coastline`,
+`ne_110m_land`, `ne_110m_lakes`, and `ne_110m_rivers_lake_centerlines`).
+Muted green land and ocean-colored lakes use triangle meshes; coastlines and thin
+blue rivers have round joins. `earcutr` triangulates polygon interiors and holes
+once at load time; geography intersects these with an elevation grid before sculptor
+projects them. Land has real, compressed 3D relief with subtle northwest lighting.
+Coastlines, lakes, rivers, place markers, and stem feet follow the same surface;
+event heights continue to encode time independently of terrain.
+Place markers are 50%-opacity discs with names close to their right. Their world-positioned
+overlay layer draws above terrain/events and below the HUD, so relief cannot hide them.
+Coastlines use half the event-line width by default.
+Thin, unlabeled contours mark every 1,000 meters above sea level. Marching triangles
+interpolates crossings on the rendered faces; a small offset avoids depth flicker.
+Contours sit below lake fills. Terrain is always visible, without a toggle.
+Geography caches the last bounds and contour interval across scene rebuilds.
+
+`data/terrain.bin` derives from GMT's
+[10-arc-minute, gridline-registered Earth Relief grid](https://oceania.generic-mapping-tools.org/server/earth/earth_relief/earth_relief_10m_g.grd),
+based on [SRTM15+ v2.7](https://topex.ucsd.edu/pub/srtm15_plus/README_V2.7.txt)
+([Tozer et al., 2019](https://doi.org/10.1029/2019EA000658)).
+GMT applies a [52.4 km Gaussian filter](https://www.generic-mapping-tools.org/remote-datasets/earth-relief.html);
+this is broad geographic context, not detailed local topography or exact summit heights.
+Samples below sea level are clamped to zero when building the surface.
+The 2161 × 1081 grid is stored south-to-north as little-endian signed 16-bit whole
+meters. Its 40-byte header contains `STRDEM01`, two `u32` dimensions, then `f64`
+west longitude, south latitude, and degree spacing. To reproduce it, install Python
+`netCDF4` and `numpy`, download the source grid, and run:
+
+```sh
+python3 tools/prepare-terrain.py earth_relief_10m_g.grd data/terrain.bin
+```
+
+Source SHA-256: `4b64b4dd46d26d07c8542a46edec205c08a7b248ac8ab53610407ae4ebf2af57`.
+
+No modern political borders or background settlements are included. These layers
+are a baseline, not a reconstruction of historical geography.
 The initial view looks straight down, with north at the top, and fits all timeline
 locations with padding above the HUD timeline.
 Longitude and latitude determine horizontal position; elapsed time determines
@@ -84,6 +123,30 @@ The dataset title stays on the HUD. The 3D line connects successive located even
 skipping unknown locations.
 All events, including Princeton, remain available.
 Historical geography is deferred.
+
+## Configuration
+
+`config/config.json` holds shared map, event, text, and timeline dimensions.
+Its `default_themes.dark` and `default_themes.light` values name theme files in
+the same directory, without `.json`. The supplied themes are `config/dark.json`
+and `config/light.json`; each declares its `kind`, palette, and opacity.
+Colors use sRGB `#RRGGBB` or `#RRGGBBAA` notation.
+`layout.map.terrain` sets `elevation_scale` (world units per meter), `shading`
+(0–1), `contour_interval` (meters), and `contour_width` (world units).
+The initial scale is 0.02 world units per kilometer; the bundled relief remains
+below the earliest events. Theme `colors.contour` controls contour color.
+`layout.map.coastline_width` sets coastline thickness; theme `opacity.places`
+sets disc opacity, and `layout.text.label_gap` sets the gap to place names.
+Event dots use `colors.event`; selected dots and their timeline label use
+`colors.selected_event`. Text uses separate palette colors.
+
+The browser's preferred color scheme selects the corresponding default theme.
+Preference changes update the scene, canvas background, and page colors while
+preserving the camera, selected event, and timeline offset.
+JavaScript forwards only `dark` or `light`; Rust loads and validates configuration.
+The configuration and two themes are embedded with explicit `include_str!` entries.
+Edits require `make web` followed by a page reload; adding a theme also requires
+an entry in `src/config/theme.rs`. Numerical safeguards and depth offsets stay in Rust.
 
 ## Development
 

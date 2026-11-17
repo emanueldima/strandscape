@@ -79,7 +79,7 @@ impl Renderer {
         let viewport = Vec2::new(self.viewport.width as f32, self.viewport.height as f32)
             / self.viewport.scale_factor as f32;
         let mut list = DrawList {
-            planes: Vec::new(),
+            planes: std::array::from_fn(|_| Vec::new()),
             spheres: Vec::new(),
             tubes: Vec::new(),
             world_view: WorldView {
@@ -103,6 +103,14 @@ impl Renderer {
         // Flatten domain objects into drawing data; only the backend sees wgpu.
         for item in &mut scene.items {
             match item {
+                Item::Mesh(mesh) => {
+                    for point in mesh.triangles.iter().flatten() {
+                        list.planes[Layer::World as usize].push(PlaneVertex {
+                            position: (clip_from_world * point.extend(1.0)).to_array(),
+                            color: mesh.color,
+                        });
+                    }
+                }
                 Item::Plane(plane) => {
                     // Invisible hit areas must not draw or occlude scene geometry.
                     if plane.color[3] == 0.0 {
@@ -111,12 +119,15 @@ impl Renderer {
                     let clip_from_local =
                         plane.transform.clip_from_local(clip_from_world, viewport);
                     for [x, y] in QUAD {
-                        list.planes.push(PlaneVertex {
-                            position: (clip_from_local
-                                * Vec3::new(x * plane.size.x, y * plane.size.y, 0.0).extend(1.0))
-                            .to_array(),
-                            color: plane.color,
-                        });
+                        list.planes[Layer::from(plane.transform.space) as usize].push(
+                            PlaneVertex {
+                                position: (clip_from_local
+                                    * Vec3::new(x * plane.size.x, y * plane.size.y, 0.0)
+                                        .extend(1.0))
+                                .to_array(),
+                                color: plane.color,
+                            },
+                        );
                     }
                 }
                 Item::Dot(dot) => {
@@ -131,10 +142,12 @@ impl Renderer {
                             Vec3::new(angle.cos(), angle.sin(), 0.0) * dot.radius,
                             Vec3::new(next.cos(), next.sin(), 0.0) * dot.radius,
                         ] {
-                            list.planes.push(PlaneVertex {
-                                position: (clip_from_local * point.extend(1.0)).to_array(),
-                                color: dot.color,
-                            });
+                            list.planes[Layer::from(dot.transform.space) as usize].push(
+                                PlaneVertex {
+                                    position: (clip_from_local * point.extend(1.0)).to_array(),
+                                    color: dot.color,
+                                },
+                            );
                         }
                     }
                 }
@@ -163,7 +176,7 @@ impl Renderer {
                         clip_from_local: text.transform.clip_from_local(clip_from_world, viewport),
                         color: text.color,
                         background: text.background,
-                        space: text.transform.space,
+                        layer: text.transform.space.into(),
                     });
                 }
             }
@@ -181,14 +194,35 @@ impl Renderer {
         self.viewport = viewport;
         self.gpu.resize(viewport);
     }
+
+    pub(crate) fn set_background(&mut self, color: [f64; 4]) {
+        self.gpu.set_background(color);
+    }
 }
 
 struct DrawList {
-    planes: Vec<PlaneVertex>,
+    planes: [Vec<PlaneVertex>; 3],
     spheres: Vec<sphere::Vertex>,
     tubes: Vec<tube::Vertex>,
     world_view: WorldView,
     text: TextBatch,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Layer {
+    World,
+    Overlay,
+    Hud,
+}
+
+impl From<Space> for Layer {
+    fn from(space: Space) -> Self {
+        match space {
+            Space::World => Self::World,
+            Space::Overlay => Self::Overlay,
+            Space::Hud => Self::Hud,
+        }
+    }
 }
 
 #[repr(C)]
@@ -208,7 +242,7 @@ struct TextDraw {
     clip_from_local: Mat4,
     color: [f32; 4],
     background: Option<[f32; 4]>,
-    space: Space,
+    layer: Layer,
 }
 
 #[repr(C)]
@@ -236,18 +270,16 @@ fn sort_tubes(tubes: &mut [&Tube], clip_from_world: Mat4) {
 }
 
 fn sort_text(runs: &mut [TextDraw]) {
-    // Blend distant labels first; keep HUD order stable above the world.
+    // Blend distant labels first within each layer; HUD stays above world overlays.
     runs.sort_by(|a, b| {
-        (a.space == Space::Hud)
-            .cmp(&(b.space == Space::Hud))
-            .then_with(|| {
-                if a.space == Space::Hud {
-                    return Ordering::Equal;
-                }
-                let a_depth = a.clip_from_local.project_point3(Vec3::ZERO).z;
-                let b_depth = b.clip_from_local.project_point3(Vec3::ZERO).z;
-                b_depth.total_cmp(&a_depth)
-            })
+        a.layer.cmp(&b.layer).then_with(|| {
+            if a.layer == Layer::Hud {
+                return Ordering::Equal;
+            }
+            let a_depth = (a.clip_from_local * Vec3::ZERO.extend(1.0)).w;
+            let b_depth = (b.clip_from_local * Vec3::ZERO.extend(1.0)).w;
+            b_depth.total_cmp(&a_depth)
+        })
     });
 }
 
@@ -275,13 +307,15 @@ mod tests {
     }
 
     #[test]
-    fn orders_world_before_hud() {
+    fn orders_world_overlay_hud() {
         let mut runs: Vec<_> = [
-            (Space::Hud, 0.0),
-            (Space::World, 0.2),
-            (Space::World, 0.9),
-            (Space::Hud, 0.0),
-            (Space::World, 0.5),
+            (Layer::Hud, 0.0),
+            (Layer::World, 0.2),
+            (Layer::World, 0.9),
+            (Layer::Hud, 0.0),
+            (Layer::World, 0.5),
+            (Layer::Overlay, 0.4),
+            (Layer::Overlay, 0.8),
         ]
         .into_iter()
         .enumerate()
@@ -290,15 +324,18 @@ mod tests {
                 bounds: [100.0, 27.0],
                 glyphs: Vec::new().into(),
             },
-            clip_from_local: Mat4::from_translation(Vec3::Z * depth),
+            clip_from_local: Mat4 {
+                w_axis: Vec3::ZERO.extend(depth),
+                ..Mat4::IDENTITY
+            },
             color: [index as f32, 0.0, 0.0, 1.0],
             background: None,
-            space,
+            layer: space,
         })
         .collect();
         sort_text(&mut runs);
         let order: Vec<_> = runs.iter().map(|run| run.color[0] as usize).collect();
-        assert_eq!(order, [2, 4, 1, 0, 3]);
+        assert_eq!(order, [2, 4, 1, 6, 5, 0, 3]);
     }
 
     #[test]

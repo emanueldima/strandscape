@@ -1,0 +1,48 @@
+{
+  "default_themes": {
+    "dark": "dark",
+    "light": "light"
+  },
+  "layout": {
+    "map": {
+      "width": 14.0,
+      "depth": 8.0,
+      "margin": 0.1,
+      "min_margin": 1.0,
+      "marker_size": 0.16,
+      "coastline_width": 0.0125,
+      "river_width": 0.0125,
+      "terrain": {
+        "elevation_scale": 0.00002,
+        "shading": 0.35,
+        "contour_interval": 1000.0,
+        "contour_width": 0.006
+      }
+    },
+    "events": {
+      "height_base": 0.7,
+      "height_span": 0.9,
+      "radius": 0.04
+    },
+    "text": {
+      "size": 20.0,
+      "scale": 0.009,
+      "label_gap": 0.03
+    },
+    "timeline": {
+      "margin": 24.0,
+      "line_height": 28.0,
+      "dot_radius": 4.0,
+      "min_gap": 24.0,
+      "height": 224.0,
+      "label_size": 12.0,
+      "label_limit": 28,
+      "label_room": 160.0,
+      "line_width": 2.0,
+      "label_angle": 45.0
+    },
+    "line_width": 0.025,
+    "selected_scale": 1.5,
+    "field_of_view": 45.0
+  }
+}

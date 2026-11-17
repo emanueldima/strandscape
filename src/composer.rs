@@ -1,5 +1,6 @@
 use {
     crate::{
+        config,
         events::Dataset,
         geography,
         sculptor::{self, Bounds, Composition, Emphasis, Entry, Map, Marker},
@@ -13,6 +14,7 @@ use {
 pub(crate) use crate::sculptor::{Output, Target};
 
 pub(crate) struct Config<'a> {
+    pub(crate) settings: &'a config::Config,
     pub(crate) selected: Option<&'a str>,
     pub(crate) geography: &'a geography::Dataset,
     pub(crate) font: FontId,
@@ -32,6 +34,7 @@ pub(crate) fn build(dataset: &Dataset, config: &Config<'_>) -> Result<Output, Co
     Ok(sculptor::build(
         &compose(dataset, config)?,
         &sculptor::Config {
+            settings: config.settings,
             font: config.font,
             viewport: config.viewport,
             timeline_offset: config.timeline_offset,
@@ -61,6 +64,9 @@ fn compose(dataset: &Dataset, config: &Config<'_>) -> Result<Composition, Compos
                 label: place.name.clone(),
                 latitude: place.latitude,
                 longitude: place.longitude,
+                elevation: config
+                    .geography
+                    .elevation([place.longitude, place.latitude]),
                 emphasis: if selected_place.is_some_and(|p| p.id == place.id) {
                     Emphasis::Selected
                 } else {
@@ -104,17 +110,24 @@ fn compose(dataset: &Dataset, config: &Config<'_>) -> Result<Composition, Compos
             bounds.south = bounds.south.min(place.latitude);
             bounds.north = bounds.north.max(place.latitude);
         }
-        let longitude_margin = ((bounds.east - bounds.west) * MAP_MARGIN).max(MIN_MARGIN);
-        let latitude_margin = ((bounds.north - bounds.south) * MAP_MARGIN).max(MIN_MARGIN);
+        let style = &config.settings.layout.map;
+        let longitude_margin = ((bounds.east - bounds.west) * style.margin).max(style.min_margin);
+        let latitude_margin = ((bounds.north - bounds.south) * style.margin).max(style.min_margin);
         bounds.west = (bounds.west - longitude_margin).max(-180.0);
         bounds.east = (bounds.east + longitude_margin).min(180.0);
         bounds.south = (bounds.south - latitude_margin).max(-90.0);
         bounds.north = (bounds.north + latitude_margin).min(90.0);
+        let layers = geography::build(
+            config.geography,
+            [bounds.west, bounds.south, bounds.east, bounds.north],
+            style.terrain.contour_interval,
+        );
         Some(Map {
-            coastlines: geography::build(
-                config.geography,
-                [bounds.west, bounds.south, bounds.east, bounds.north],
-            ),
+            coastlines: layers.coastlines,
+            land: layers.land,
+            lakes: layers.lakes,
+            rivers: layers.rivers,
+            contours: layers.contours,
             bounds,
             markers: places.into_values().collect(),
         })
@@ -126,9 +139,6 @@ fn compose(dataset: &Dataset, config: &Config<'_>) -> Result<Composition, Compos
     })
 }
 
-const MAP_MARGIN: f64 = 0.1;
-const MIN_MARGIN: f64 = 1.0;
-
 #[cfg(test)]
 mod tests {
     use {
@@ -137,9 +147,271 @@ mod tests {
     };
 
     #[test]
+    fn places_use_transparent_discs() {
+        for kind in [config::Kind::Dark, config::Kind::Light] {
+            let settings = config::load(kind).unwrap();
+            let geography = geography();
+            let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
+            let output = build(
+                &data,
+                &Config {
+                    settings: &settings,
+                    selected: Some("einstein-miracle-year"),
+                    geography: &geography,
+                    font: FontId(0),
+                    viewport: Vec2::new(800.0, 600.0),
+                    timeline_offset: 0.0,
+                },
+            )
+            .unwrap();
+            for (index, target) in &output.bindings {
+                let Target::Place(_, point) = target else {
+                    continue;
+                };
+                if matches!(&output.scene.items[*index], Item::Text(_)) {
+                    continue;
+                }
+                let Item::Dot(dot) = &output.scene.items[*index] else {
+                    panic!("place marker must be a disc")
+                };
+                assert_eq!(dot.radius, settings.layout.map.marker_size * 0.5);
+                assert_eq!(dot.color[3], 0.5);
+                assert_eq!(dot.transform.translation, *point);
+                assert_eq!(dot.transform.space, Space::Overlay);
+                let Item::Text(label) = &output.scene.items[index + 1] else {
+                    panic!("missing place name")
+                };
+                assert_eq!(label.transform.space, Space::Overlay);
+                assert!(
+                    (label.transform.translation.x
+                        - point.x
+                        - dot.radius
+                        - settings.layout.text.label_gap)
+                        .abs()
+                        < 1e-6
+                );
+                assert!(settings.layout.text.label_gap < dot.radius);
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_preserves_event_heights() {
+        let settings = config::load(config::Kind::Light).unwrap();
+        let geography = geography();
+        let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
+        let output = build(
+            &data,
+            &Config {
+                settings: &settings,
+                selected: None,
+                geography: &geography,
+                font: FontId(0),
+                viewport: Vec2::new(1280.0, 800.0),
+                timeline_offset: 0.0,
+            },
+        )
+        .unwrap();
+        let start = data
+            .events
+            .iter()
+            .map(|event| event.date.value)
+            .fold(f64::INFINITY, f64::min);
+        let end = data
+            .events
+            .iter()
+            .map(|event| event.date.value)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let style = &settings.layout;
+        let mut contours = 0;
+        let mut first_contour = None;
+        let mut highest = 0.0_f32;
+        for (index, item) in output.scene.items.iter().enumerate() {
+            match item {
+                Item::Sphere(sphere) => {
+                    let Target::Entry(id) = &output.bindings[&index] else {
+                        panic!("missing event")
+                    };
+                    let event = data.events.iter().find(|event| &event.id == id).unwrap();
+                    let expected = style.events.height_base
+                        + ((event.date.value - start) / (end - start)) as f32
+                            * style.events.height_span;
+                    assert_eq!(sphere.center.y, expected);
+                }
+                Item::Mesh(mesh) => {
+                    assert!(!output.bindings.contains_key(&index));
+                    for point in mesh.triangles.iter().flatten() {
+                        highest = highest.max(point.y);
+                    }
+                }
+                Item::Plane(plane) if plane.color == settings.theme.colors.contour.linear => {
+                    assert!(!output.bindings.contains_key(&index));
+                    let first = *first_contour.get_or_insert(plane.transform.translation.y);
+                    let intervals = (plane.transform.translation.y - first)
+                        / (style.map.terrain.elevation_scale
+                            * style.map.terrain.contour_interval as f32);
+                    assert!((intervals - intervals.round()).abs() < 0.001);
+                    contours += 1;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            highest > style.map.terrain.contour_interval as f32 * style.map.terrain.elevation_scale
+        );
+        assert!(highest < style.events.height_base - style.events.radius);
+        assert!(contours > 0);
+    }
+
+    #[test]
+    fn light_events_are_blue() {
+        let settings = config::load(config::Kind::Light).unwrap();
+        let geography = geography();
+        let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
+        let selected = "einstein-miracle-year";
+        let output = build(
+            &data,
+            &Config {
+                settings: &settings,
+                selected: Some(selected),
+                geography: &geography,
+                font: FontId(0),
+                viewport: Vec2::new(800.0, 500.0),
+                timeline_offset: 0.0,
+            },
+        )
+        .unwrap();
+        let mut world = 0;
+        let mut hud = 0;
+        let mut red = 0;
+        let mut blue = 0;
+        for (index, target) in &output.bindings {
+            let Target::Entry(id) = target else { continue };
+            let color = match &output.scene.items[*index] {
+                Item::Sphere(sphere) => {
+                    world += 1;
+                    sphere.color
+                }
+                Item::Dot(dot) => {
+                    hud += 1;
+                    dot.color
+                }
+                _ => continue,
+            };
+            if id == selected {
+                assert!(
+                    color[0] > 0.5 && color[2] < 0.1,
+                    "selected event must be red"
+                );
+                red += 1;
+            } else {
+                assert!(
+                    color[2] > 0.5 && color[0] < 0.1,
+                    "ordinary event must be blue"
+                );
+                blue += 1;
+            }
+        }
+        assert!(world > 0 && hud > 0 && blue > 0);
+        assert_eq!(red, 2);
+        let Item::Text(title) = &output.scene.items[0] else {
+            panic!("missing title")
+        };
+        assert_eq!(title.color, settings.theme.colors.ink.linear);
+    }
+
+    #[test]
+    fn themes_preserve_geometry() {
+        let geography = geography();
+        let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
+        let output = |kind| {
+            let settings = config::load(kind).unwrap();
+            build(
+                &data,
+                &Config {
+                    settings: &settings,
+                    selected: Some("einstein-miracle-year"),
+                    geography: &geography,
+                    font: FontId(0),
+                    viewport: Vec2::new(800.0, 500.0),
+                    timeline_offset: 50.0,
+                },
+            )
+            .unwrap()
+        };
+        let dark = output(config::Kind::Dark);
+        let light = output(config::Kind::Light);
+        assert_eq!(dark.scene.items.len(), light.scene.items.len());
+        assert_eq!(dark.bindings.len(), light.bindings.len());
+        assert_eq!(dark.timeline.offset, light.timeline.offset);
+        assert_eq!(
+            dark.scene.camera.clip_from_world(1.6),
+            light.scene.camera.clip_from_world(1.6)
+        );
+        for (dark, light) in dark.scene.items.iter().zip(&light.scene.items) {
+            match (dark, light) {
+                (Item::Mesh(a), Item::Mesh(b)) => {
+                    assert_eq!(a.triangles, b.triangles);
+                    assert_ne!(a.color, b.color);
+                }
+                (Item::Sphere(a), Item::Sphere(b)) => {
+                    assert_eq!(a.center, b.center);
+                    assert_eq!(a.radius, b.radius);
+                    assert_ne!(a.color, b.color);
+                }
+                (Item::Text(a), Item::Text(b)) => {
+                    assert_eq!(a.transform.matrix(), b.transform.matrix());
+                    assert_eq!(a.spec.size, b.spec.size);
+                    assert_eq!(a.spec.content, b.spec.content);
+                    assert_ne!(a.color, b.color);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn layout_controls_scene_sizes() {
+        let geography = geography();
+        let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
+        let mut settings = config::load(config::Kind::Light).unwrap();
+        settings.layout.events.radius = 0.08;
+        settings.layout.line_width = 0.05;
+        settings.layout.timeline.label_size = 18.0;
+        settings.theme.opacity.tubes = 0.8;
+        let output = build(
+            &data,
+            &Config {
+                settings: &settings,
+                selected: None,
+                geography: &geography,
+                font: FontId(0),
+                viewport: Vec2::new(800.0, 500.0),
+                timeline_offset: 0.0,
+            },
+        )
+        .unwrap();
+        for item in &output.scene.items {
+            match item {
+                Item::Sphere(sphere) => assert_eq!(sphere.radius, 0.08),
+                Item::Tube(tube) => {
+                    assert_eq!(tube.radius, 0.025);
+                    assert_eq!(tube.color[3], 0.8);
+                }
+                Item::Text(text)
+                    if text.transform.space == Space::Hud && text.spec.content != data.title =>
+                {
+                    assert_eq!(text.spec.size, 18.0);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
     fn initial_view_fits_places() {
-        let geography =
-            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let geography = geography();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         for viewport in [
             Vec2::new(1280.0, 400.0),
@@ -149,6 +421,7 @@ mod tests {
             let output = build(
                 &data,
                 &Config {
+                    settings: &settings,
                     selected: None,
                     geography: &geography,
                     font: FontId(0),
@@ -187,12 +460,13 @@ mod tests {
 
     #[test]
     fn build_preserves_ids() {
-        let geography =
-            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let geography = geography();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         let output = build(
             &data,
             &Config {
+                settings: &settings,
                 selected: None,
                 geography: &geography,
                 font: FontId(0),
@@ -260,8 +534,8 @@ mod tests {
 
     #[test]
     fn place_labels_pick_their_place() {
-        let geography =
-            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let geography = geography();
         let mut data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         data.events
             .retain(|event| event.place.as_ref().is_some_and(|place| place.id == "ulm"));
@@ -269,6 +543,7 @@ mod tests {
         let mut output = build(
             &data,
             &Config {
+                settings: &settings,
                 selected: None,
                 geography: &geography,
                 font: FontId(0),
@@ -283,7 +558,7 @@ mod tests {
             .iter_mut()
             .enumerate()
             .find_map(|(index, item)| match item {
-                Item::Text(text) if text.transform.space == Space::World => Some((index, text)),
+                Item::Text(text) if text.transform.space == Space::Overlay => Some((index, text)),
                 _ => None,
             })
             .unwrap();
@@ -324,13 +599,14 @@ mod tests {
 
     #[test]
     fn timeline_labels_bind_events() {
-        let geography =
-            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let geography = geography();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         for offset in [0.0, f32::MAX] {
             let mut output = build(
                 &data,
                 &Config {
+                    settings: &settings,
                     selected: None,
                     geography: &geography,
                     font: FontId(0),
@@ -388,14 +664,15 @@ mod tests {
 
     #[test]
     fn selection_highlights_both_views() {
-        let geography =
-            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let geography = geography();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         let viewport = Vec2::new(800.0, 500.0);
         for selected in [None, Some("einstein-miracle-year"), Some("einstein-nobel")] {
             let mut output = build(
                 &data,
                 &Config {
+                    settings: &settings,
                     selected,
                     geography: &geography,
                     font: FontId(0),
@@ -550,7 +827,7 @@ mod tests {
                     .items
                     .iter()
                     .filter(|item| matches!(item,
-                Item::Text(text) if text.transform.space == Space::World))
+                Item::Text(text) if text.transform.space == Space::Overlay))
                     .count(),
                 9
             );
@@ -584,11 +861,12 @@ mod tests {
 
     #[test]
     fn scrolling_keeps_hud_text_fixed() {
-        let geography =
-            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let geography = geography();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         for viewport in [Vec2::new(320.0, 500.0), Vec2::new(600.0, 800.0)] {
             let mut config = Config {
+                settings: &settings,
                 selected: Some("einstein-miracle-year"),
                 geography: &geography,
                 font: FontId(0),
@@ -605,7 +883,7 @@ mod tests {
                 .iter()
                 .filter_map(|item| match item {
                     Item::Text(text)
-                        if text.transform.space == Space::World
+                        if text.transform.space == Space::Overlay
                             || text.transform.rotation == glam::Quat::IDENTITY =>
                     {
                         Some(text)
@@ -619,7 +897,7 @@ mod tests {
                 .iter()
                 .filter_map(|item| match item {
                     Item::Text(text)
-                        if text.transform.space == Space::World
+                        if text.transform.space == Space::Overlay
                             || text.transform.rotation == glam::Quat::IDENTITY =>
                     {
                         Some(text)
@@ -679,13 +957,14 @@ mod tests {
 
     #[test]
     fn infers_map_and_orders_strand() {
-        let geography =
-            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let geography = geography();
         let mut data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         data.events.reverse();
         let composition = compose(
             &data,
             &Config {
+                settings: &settings,
                 selected: None,
                 geography: &geography,
                 font: FontId(0),
@@ -714,10 +993,11 @@ mod tests {
 
     #[test]
     fn selection_sets_map_context() {
-        let geography =
-            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let geography = geography();
         let data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         let mut config = Config {
+            settings: &settings,
             selected: Some("einstein-miracle-year"),
             geography: &geography,
             font: FontId(0),
@@ -748,13 +1028,14 @@ mod tests {
 
     #[test]
     fn unlocated_events_need_no_map() {
-        let geography =
-            geography::Dataset::parse(include_bytes!("../data/coastlines.geojson")).unwrap();
+        let settings = config::load(config::Kind::Dark).unwrap();
+        let geography = geography();
         let mut data = Dataset::parse(include_bytes!("../data/einstein.json")).unwrap();
         data.events.retain(|event| event.place.is_none());
         let composition = compose(
             &data,
             &Config {
+                settings: &settings,
                 selected: None,
                 geography: &geography,
                 font: FontId(0),
@@ -765,5 +1046,16 @@ mod tests {
         .unwrap();
         assert!(composition.map.is_none());
         assert_eq!(composition.strand.len(), 1);
+    }
+
+    fn geography() -> geography::Dataset {
+        geography::Dataset::parse(geography::Sources {
+            coastlines: include_bytes!("../data/coastlines.geojson"),
+            land: include_bytes!("../data/land.geojson"),
+            lakes: include_bytes!("../data/lakes.geojson"),
+            rivers: include_bytes!("../data/rivers.geojson"),
+            terrain: include_bytes!("../data/terrain.bin"),
+        })
+        .unwrap()
     }
 }

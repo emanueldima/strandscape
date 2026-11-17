@@ -1,9 +1,9 @@
 use {
-    super::{RenderError, TextBatch},
+    super::{Layer, RenderError, TextBatch},
     crate::text::GlyphKey,
     bytemuck::{Pod, Zeroable},
     glam::Vec4,
-    std::collections::HashMap,
+    std::{collections::HashMap, ops::Range},
     wgpu::util::DeviceExt,
 };
 
@@ -15,7 +15,7 @@ pub(super) struct TextRenderer {
     cursor: [u32; 2],
     row_height: u32,
     vertices: Option<wgpu::Buffer>,
-    vertex_count: u32,
+    ranges: [Range<u32>; 3],
 }
 
 impl TextRenderer {
@@ -115,7 +115,7 @@ impl TextRenderer {
             cursor: [PADDING; 2],
             row_height: 0,
             vertices: None,
-            vertex_count: 0,
+            ranges: std::array::from_fn(|_| 0..0),
         }
     }
 
@@ -174,8 +174,15 @@ impl TextRenderer {
             self.row_height = self.row_height.max(image.height);
         }
 
-        let vertices = vertices(batch, &self.entries);
-        self.vertex_count = vertices.len() as u32;
+        let layers = [Layer::World, Layer::Overlay, Layer::Hud]
+            .map(|space| vertices(batch, &self.entries, space));
+        let mut end = 0;
+        self.ranges = layers.each_ref().map(|vertices| {
+            let start = end;
+            end += vertices.len() as u32;
+            start..end
+        });
+        let vertices: Vec<_> = layers.into_iter().flatten().collect();
         self.vertices = if vertices.is_empty() {
             None
         } else {
@@ -190,14 +197,14 @@ impl TextRenderer {
         Ok(())
     }
 
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, space: Layer) {
         let Some(vertices) = &self.vertices else {
             return;
         };
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.atlas_bind_group, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));
-        pass.draw(0..self.vertex_count, 0..1);
+        pass.draw(self.ranges[space as usize].clone(), 0..1);
     }
 }
 
@@ -225,9 +232,13 @@ struct Vertex {
     color: [f32; 4],
 }
 
-fn vertices(batch: &TextBatch, entries: &HashMap<GlyphKey, AtlasEntry>) -> Vec<Vertex> {
+fn vertices(
+    batch: &TextBatch,
+    entries: &HashMap<GlyphKey, AtlasEntry>,
+    space: Layer,
+) -> Vec<Vertex> {
     let mut vertices = Vec::new();
-    for run in &batch.runs {
+    for run in batch.runs.iter().filter(|run| run.layer == space) {
         if let Some(color) = run.background.filter(|color| color[3] > 0.0) {
             // Match the shaped text bounds, then draw its glyphs over the pane.
             let [min, max] = run.layout.pane_bounds();
@@ -267,9 +278,37 @@ fn vertices(batch: &TextBatch, entries: &HashMap<GlyphKey, AtlasEntry>) -> Vec<V
 mod tests {
     use {
         super::*,
-        crate::{render::TextDraw, scene::Space, text::TextLayout},
+        crate::{render::TextDraw, text::TextLayout},
         glam::{Mat4, Vec3},
     };
+
+    #[test]
+    fn separates_text_layers() {
+        let batch = TextBatch {
+            runs: [Layer::World, Layer::Overlay, Layer::Hud]
+                .map(|space| TextDraw {
+                    layout: TextLayout {
+                        bounds: [100.0, 27.0],
+                        glyphs: Vec::new().into(),
+                    },
+                    clip_from_local: Mat4::IDENTITY,
+                    color: [1.0; 4],
+                    background: Some([space as u8 as f32, 0.0, 0.0, 1.0]),
+                    layer: space,
+                })
+                .into(),
+            images: HashMap::new(),
+        };
+        for space in [Layer::World, Layer::Overlay, Layer::Hud] {
+            let layer = vertices(&batch, &HashMap::new(), space);
+            assert_eq!(layer.len(), 6);
+            assert!(
+                layer
+                    .iter()
+                    .all(|vertex| vertex.color[0] == space as u8 as f32)
+            );
+        }
+    }
 
     #[test]
     fn panes_fit_text_bounds() {
@@ -296,11 +335,11 @@ mod tests {
                         clip_from_local: transform,
                         color: [1.0; 4],
                         background,
-                        space: Space::World,
+                        layer: Layer::World,
                     }],
                     images: HashMap::new(),
                 };
-                let pane = vertices(&batch, &HashMap::new());
+                let pane = vertices(&batch, &HashMap::new(), Layer::World);
                 let Some(color) = background.filter(|color| color[3] > 0.0) else {
                     assert!(pane.is_empty());
                     continue;
